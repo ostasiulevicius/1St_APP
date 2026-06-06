@@ -1,0 +1,45 @@
+# Reglas del Espacio de Trabajo - Sistema de Logística y Control de Flota
+
+Este archivo define las tecnologías, credenciales y reglas de desarrollo para este proyecto de control de flota.
+
+## 🛠️ Stack Tecnológico
+- **Backend/Plataforma:** Node.js
+- **Base de Datos:** MySQL
+  - **Host:** `127.0.0.1`
+  - **Puerto:** `3306`
+  - **Usuario:** `root`
+  - **Contraseña:** `""` (vacía)
+  - **Base de Datos:** `flota` (referenciada como `flota.db` o `flota`)
+- **Integración/Bot:** `whatsapp-web.js` para escuchar grupos y chats privados.
+- **Almacenamiento de Fotos:** Cloudflare R2.
+
+## 📋 Reglas de Desarrollo
+1. **Configuración de Variables de Entorno (.env):**
+   - No guardar credenciales hardcodeadas en el código fuente.
+   - Usar un archivo `.env` para almacenar los accesos a la base de datos y las credenciales de Cloudflare R2.
+   - Ejemplo de `.env`:
+     ```env
+     DB_HOST=127.0.0.1
+     DB_PORT=3306
+     DB_USER=root
+     DB_PASSWORD=
+     DB_NAME=flota
+     
+     R2_ENDPOINT=https://<account_id>.r2.cloudflarestorage.com
+     R2_ACCESS_KEY_ID=tu_access_key
+     R2_SECRET_ACCESS_KEY=tu_secret_key
+     R2_BUCKET_NAME=flota-fotos
+     ```
+
+2. **Arquitectura del Código:**
+   - **Separación de Capas:** Mantener separados los servicios de base de datos, el cliente de WhatsApp, y el cliente de almacenamiento en la nube (R2).
+   - **Manejo de Errores:** Todos los accesos a la base de datos y llamadas de API de WhatsApp/R2 deben incluir manejo robusto de errores (`try-catch`) y logs claros.
+   - **Reconexiones:** El cliente de WhatsApp (`whatsapp-web.js`) debe poder gestionar caídas de sesión y reconectarse de manera limpia.
+
+3. **Base de Datos (MySQL):**
+   - Utilizar un pool de conexiones (`mysql2/promise`) para evitar agotar las conexiones y mejorar el rendimiento de la aplicación.
+   - Diseñar tablas estructuradas para vehículos, choferes, rutas y logs de chats.
+
+4. **Almacenamiento (Cloudflare R2):**
+   - Usar la librería oficial `@aws-sdk/client-s3` para interactuar con Cloudflare R2 de forma compatible con S3.
+   - Renombrar las fotos cargadas usando UUIDs o timestamps únicos para evitar colisiones.
