@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Control de Flota</title>
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body>
+  <nav class="navbar">
+    <div class="navbar-brand">🚗 Control de Flota</div>
+    <div class="navbar-tabs">
+      <button class="tab-btn active" data-tab="vehicles">Vehículos</button>
+      <button class="tab-btn" data-tab="gnc">GNC</button>
+      <button class="tab-btn" data-tab="insurance">Seguros</button>
+      <button class="tab-btn" data-tab="alerts">
+        Alertas <span id="alert-badge" class="badge hidden">0</span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- VEHICLES TAB -->
+  <section id="tab-vehicles" class="tab-content active">
+    <div class="section-header">
+      <h2>Vehículos</h2>
+      <button class="btn btn-primary" id="btn-new-vehicle">+ Nuevo Vehículo</button>
+    </div>
+    <div id="vehicles-list" class="card-grid"></div>
+
+    <!-- VEHICLE FORM MODAL -->
+    <div id="modal-vehicle" class="modal hidden">
+      <div class="modal-overlay"></div>
+      <div class="modal-box">
+        <div class="modal-header">
+          <h3 id="modal-vehicle-title">Registrar Vehículo</h3>
+          <button class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <!-- Cédula drag & drop -->
+          <div class="form-section">
+            <h4>📄 Cédula del Vehículo</h4>
+            <div class="drop-row">
+              <div class="drop-zone" id="drop-cedula-frente" data-field="cedula_frente">
+                <div class="drop-icon">📷</div>
+                <div class="drop-label">Frente de la Cédula</div>
+                <div class="drop-hint">Arrastrá o hacé click</div>
+                <input type="file" accept="image/*" hidden />
+                <img class="drop-preview hidden" alt="preview" />
+              </div>
+              <div class="drop-zone" id="drop-cedula-dorso" data-field="cedula_dorso">
+                <div class="drop-icon">📷</div>
+                <div class="drop-label">Dorso de la Cédula</div>
+                <div class="drop-hint">Arrastrá o hacé click</div>
+                <input type="file" accept="image/*" hidden />
+                <img class="drop-preview hidden" alt="preview" />
+              </div>
+            </div>
+            <button class="btn btn-secondary btn-sm" id="btn-extract-vehicle">
+              ✨ Extraer datos con IA
+            </button>
+            <div id="extract-vehicle-status" class="status-msg hidden"></div>
+          </div>
+
+          <!-- Datos del vehículo -->
+          <div class="form-section">
+            <h4>🚗 Datos del Vehículo</h4>
+            <div class="form-grid">
+              <label>Patente *<input type="text" id="v-patente" placeholder="ABC123" /></label>
+              <label>Marca<input type="text" id="v-marca" /></label>
+              <label>Modelo<input type="text" id="v-modelo" /></label>
+              <label>Año<input type="number" id="v-anio" min="1900" max="2099" /></label>
+              <label>Color<input type="text" id="v-color" /></label>
+              <label>Chasis<input type="text" id="v-chasis" /></label>
+              <label>Motor<input type="text" id="v-motor" /></label>
+            </div>
+          </div>
+
+          <!-- Datos del titular -->
+          <div class="form-section">
+            <h4>👤 Titular</h4>
+            <div class="form-grid">
+              <label class="col-2">Nombre *<input type="text" id="v-titular-nombre" /></label>
+              <label class="col-2">Domicilio<input type="text" id="v-titular-domicilio" /></label>
+              <label>Email *<input type="email" id="v-email" /></label>
+              <label>Celular *<input type="tel" id="v-celular" /></label>
+            </div>
+          </div>
+
+          <!-- Contactos alternativos -->
+          <div class="form-section">
+            <h4>📞 Contactos Alternativos</h4>
+            <div id="contacts-list"></div>
+            <button class="btn btn-secondary btn-sm" id="btn-add-contact">+ Agregar contacto</button>
+          </div>
+
+          <!-- Fotos del vehículo -->
+          <div class="form-section">
+            <h4>📸 Fotos del Estado del Vehículo</h4>
+            <div class="drop-row drop-row-4">
+              <div class="drop-zone drop-sm" id="drop-foto-frente" data-field="foto_frente">
+                <div class="drop-icon">⬆️</div>
+                <div class="drop-label">Frente</div>
+                <input type="file" accept="image/*" hidden />
+                <img class="drop-preview hidden" alt="preview" />
+              </div>
+              <div class="drop-zone drop-sm" id="drop-foto-lateral-der" data-field="foto_lateral_der">
+                <div class="drop-icon">➡️</div>
+                <div class="drop-label">Lateral Der.</div>
+                <input type="file" accept="image/*" hidden />
+                <img class="drop-preview hidden" alt="preview" />
+              </div>
+              <div class="drop-zone drop-sm" id="drop-foto-lateral-izq" data-field="foto_lateral_izq">
+                <div class="drop-icon">⬅️</div>
+                <div class="drop-label">Lateral Izq.</div>
+                <input type="file" accept="image/*" hidden />
+                <img class="drop-preview hidden" alt="preview" />
+              </div>
+              <div class="drop-zone drop-sm" id="drop-foto-detras" data-field="foto_detras">
+                <div class="drop-icon">⬇️</div>
+                <div class="drop-label">Detrás</div>
+                <input type="file" accept="image/*" hidden />
+                <img class="drop-preview hidden" alt="preview" />
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary modal-close">Cancelar</button>
+          <button class="btn btn-primary" id="btn-save-vehicle">Guardar Vehículo</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- GNC TAB -->
+  <section id="tab-gnc" class="tab-content hidden">
+    <div class="section-header">
+      <h2>GNC</h2>
+      <button class="btn btn-primary" id="btn-new-gnc">+ Nuevo Registro GNC</button>
+    </div>
+    <div id="gnc-list" class="card-grid"></div>
+
+    <div id="modal-gnc" class="modal hidden">
+      <div class="modal-overlay"></div>
+      <div class="modal-box">
+        <div class="modal-header">
+          <h3>Registrar GNC</h3>
+          <button class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-section">
+            <h4>🚗 Vehículo</h4>
+            <div class="searchable-select-wrap">
+              <div class="searchable-select" id="gnc-vehicle-select">
+                <input type="text" placeholder="Buscar vehículo..." class="ss-input" />
+                <div class="ss-dropdown hidden"></div>
+                <input type="hidden" id="gnc-vehicle-id" />
+              </div>
+            </div>
+          </div>
+          <div class="form-section">
+            <h4>📄 Oblea / Certificado GNC</h4>
+            <div class="drop-zone" id="drop-gnc" data-field="gnc_archivo">
+              <div class="drop-icon">📷</div>
+              <div class="drop-label">Subí la oblea o certificado</div>
+              <div class="drop-hint">Arrastrá o hacé click (imagen)</div>
+              <input type="file" accept="image/*" hidden />
+              <img class="drop-preview hidden" alt="preview" />
+            </div>
+            <button class="btn btn-secondary btn-sm" id="btn-extract-gnc">✨ Extraer datos con IA</button>
+            <div id="extract-gnc-status" class="status-msg hidden"></div>
+          </div>
+          <div class="form-section">
+            <h4>📋 Datos GNC</h4>
+            <div class="form-grid">
+              <label>Número de Oblea<input type="text" id="gnc-numero-oblea" /></label>
+              <label>Regulador<input type="text" id="gnc-regulador" /></label>
+              <label>Fecha de Vencimiento *<input type="date" id="gnc-fecha-vencimiento" /></label>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary modal-close">Cancelar</button>
+          <button class="btn btn-primary" id="btn-save-gnc">Guardar</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- INSURANCE TAB -->
+  <section id="tab-insurance" class="tab-content hidden">
+    <div class="section-header">
+      <h2>Seguros</h2>
+      <button class="btn btn-primary" id="btn-new-insurance">+ Nueva Póliza</button>
+    </div>
+    <div id="insurance-list" class="card-grid"></div>
+
+    <div id="modal-insurance" class="modal hidden">
+      <div class="modal-overlay"></div>
+      <div class="modal-box">
+        <div class="modal-header">
+          <h3>Registrar Póliza de Seguro</h3>
+          <button class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-section">
+            <h4>🚗 Vehículo</h4>
+            <div class="searchable-select-wrap">
+              <div class="searchable-select" id="ins-vehicle-select">
+                <input type="text" placeholder="Buscar vehículo..." class="ss-input" />
+                <div class="ss-dropdown hidden"></div>
+                <input type="hidden" id="ins-vehicle-id" />
+              </div>
+            </div>
+          </div>
+          <div class="form-section">
+            <h4>📄 Documento de Póliza</h4>
+            <div class="drop-zone" id="drop-insurance" data-field="insurance_archivo">
+              <div class="drop-icon">📄</div>
+              <div class="drop-label">Subí la póliza</div>
+              <div class="drop-hint">Arrastrá o hacé click (imagen o PDF)</div>
+              <input type="file" accept="image/*,application/pdf" hidden />
+              <img class="drop-preview hidden" alt="preview" />
+              <span class="drop-filename hidden"></span>
+            </div>
+            <button class="btn btn-secondary btn-sm" id="btn-extract-insurance">✨ Extraer datos con IA</button>
+            <div id="extract-insurance-status" class="status-msg hidden"></div>
+          </div>
+          <div class="form-section">
+            <h4>📋 Datos del Seguro</h4>
+            <div class="form-grid">
+              <label class="col-2">Compañía *
+                <div class="searchable-select-wrap">
+                  <div class="searchable-select" id="ins-company-select">
+                    <input type="text" placeholder="Buscar o escribir compañía..." class="ss-input" id="ins-company-input" />
+                    <div class="ss-dropdown hidden"></div>
+                    <input type="hidden" id="ins-company-id" />
+                  </div>
+                </div>
+              </label>
+              <label>Número de Póliza *<input type="text" id="ins-numero-poliza" /></label>
+              <label>Vigencia Desde<input type="date" id="ins-vigencia-desde" /></label>
+              <label>Vigencia Hasta<input type="date" id="ins-vigencia-hasta" /></label>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary modal-close">Cancelar</button>
+          <button class="btn btn-primary" id="btn-save-insurance">Guardar</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ALERTS TAB -->
+  <section id="tab-alerts" class="tab-content hidden">
+    <div class="section-header">
+      <h2>Alertas de Vencimiento</h2>
+    </div>
+    <div id="alerts-list"></div>
+  </section>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="app.js"></script>
+</body>
+</html>
