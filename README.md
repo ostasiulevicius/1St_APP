@@ -10,7 +10,7 @@ Este proyecto es un sistema de logística diseñado para el control de flota de 
   - **Puerto:** `3306`
   - **Usuario:** `root`
   - **Contraseña:** `""` (vacía)
-  - **Nombre de Base de Datos:** `flota` (flota.db)
+  - **Nombre de Base de Datos:** `flota`
 - **Integración de Mensajería:** `whatsapp-web.js` (usado para escuchar grupos y chats privados)
 - **Almacenamiento de Fotos:** Cloudflare R2 (compatible con la API de AWS S3)
 
@@ -47,6 +47,9 @@ Este proyecto es un sistema de logística diseñado para el control de flota de 
    ```
 
 2. **Instalación de Dependencias:**
+   ```bash
+   npm install
+   ```
    Una vez inicializado el proyecto, se requerirán paquetes como:
    - `mysql2` para conectarse a la base de datos MySQL.
    - `whatsapp-web.js` junto con `qrcode-terminal` para el bot de WhatsApp.
