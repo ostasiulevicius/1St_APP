@@ -837,6 +837,11 @@ async function openWhatsAppModal(tableId, label, preselect = null) {
     if (st) { st.innerHTML = `<span style="color:orange;">⚠️ No se pudo verificar estado del bot</span>`; }
     console.warn('[bot-status]', e);
   });
+  // Mostrar/ocultar el toggle XLS según si hay tabla o XLS pre-generado
+  const xlsToggle = document.getElementById('wa-xls-toggle');
+  const hasXls = !!(tableId || _waPreXls);
+  if (xlsToggle) xlsToggle.style.display = hasXls ? '' : 'none';
+
   openModal('modal-whatsapp');
   requestAnimationFrame(() => {
     waUpdateTipoBtns();
@@ -1193,7 +1198,10 @@ async function sendViaWhatsApp() {
       let sentAdjs = 0, failAdjs = 0;
       for (const adj of adjsToSend) {
         try {
-          const blob   = await fetch(adj.url).then(r => { if (!r.ok) throw new Error(); return r.blob(); });
+          const fetchUrl = adj.tipo === 'link'
+            ? `/api/proxy-imagen?url=${encodeURIComponent(adj.url)}`
+            : adj.url;
+          const blob   = await fetch(fetchUrl).then(r => { if (!r.ok) throw new Error(); return r.blob(); });
           const base64 = await new Promise((resolve, reject) => {
             const reader = new FileReader();
             reader.onload  = () => resolve(reader.result.split(',')[1]);
@@ -1205,7 +1213,10 @@ async function sendViaWhatsApp() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ phone, message: '', mediaBase64: base64, mediaMime: blob.type || 'application/octet-stream', mediaFilename: adj.nombre, audit: null })
           });
-          if (sendRes.ok) sentAdjs++; else failAdjs++;
+          if (sendRes.ok) { sentAdjs++; st.textContent = `Enviando adjuntos... ${sentAdjs}/${adjsToSend.length}`; }
+          else failAdjs++;
+          // Pausa entre envíos para evitar rate-limit de whatsapp-web.js
+          await new Promise(r => setTimeout(r, 1200));
         } catch { failAdjs++; }
       }
       st.textContent = failAdjs
@@ -1270,12 +1281,47 @@ async function _sendViaTelegram() {
       body: JSON.stringify({ chatId, message, xlsBase64, xlsFilename, audit })
     });
     const data = await res.json();
-    if (res.ok) {
-      st.textContent = '✓ Enviado por Telegram'; st.style.color = 'var(--color-success)';
-      setTimeout(() => closeModal('modal-whatsapp'), 1500);
-    } else {
+    if (!res.ok) {
       st.textContent = '✗ ' + (data.message || 'Error al enviar'); st.style.color = 'var(--color-error)';
+      return;
     }
+
+    // Enviar adjuntos de multas seleccionados
+    const adjChecks  = document.querySelectorAll('#wa-multa-adjs-list input[type=checkbox]:checked');
+    const adjsToSend = Array.from(adjChecks).map(cb => _waMultaAdjs[parseInt(cb.dataset.adjIdx)]).filter(Boolean);
+    if (adjsToSend.length) {
+      st.textContent = `✓ Mensaje enviado — enviando ${adjsToSend.length} adjunto(s)...`;
+      let sentAdjs = 0, failAdjs = 0;
+      for (const adj of adjsToSend) {
+        try {
+          const fetchUrl = adj.tipo === 'link'
+            ? `/api/proxy-imagen?url=${encodeURIComponent(adj.url)}`
+            : adj.url;
+          const blob   = await fetch(fetchUrl).then(r => { if (!r.ok) throw new Error(); return r.blob(); });
+          const base64 = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload  = () => resolve(reader.result.split(',')[1]);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+          const sendRes = await fetch('/api/telegram/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chatId, message: '', mediaBase64: base64, mediaMime: blob.type || 'application/octet-stream', mediaFilename: adj.nombre, audit: null })
+          });
+          if (sendRes.ok) sentAdjs++; else failAdjs++;
+        } catch { failAdjs++; }
+      }
+      st.textContent = failAdjs
+        ? `✓ Enviado — ${sentAdjs} adjunto(s) OK, ${failAdjs} con error`
+        : `✓ Enviado con ${sentAdjs} adjunto(s)`;
+    } else {
+      st.textContent = '✓ Enviado por Telegram';
+    }
+
+    st.style.color = 'var(--color-success)';
+    _waMultaAdjs = [];
+    setTimeout(() => closeModal('modal-whatsapp'), 1800);
   } catch(e) {
     st.textContent = 'Error: ' + (e?.message || String(e)); st.style.color = 'var(--color-error)';
   }
@@ -5997,6 +6043,17 @@ async function viewMulta(id) {
   document.getElementById('btn-submit-multa').style.display = 'none';
   document.getElementById('modal-multa-title').innerHTML =
     document.getElementById('modal-multa-title').innerHTML.replace('Editar Infracción', 'Consulta Infracción');
+  // Restaurar clicks en galería de adjuntos (se carga async, puede no existir aún)
+  const patchGallery = () => {
+    const gallery = document.getElementById('multa-adj-gallery');
+    if (!gallery) return;
+    gallery.style.pointerEvents = 'auto';
+    // Ocultar botones de borrar en modo consulta
+    gallery.querySelectorAll('button').forEach(btn => { btn.style.display = 'none'; });
+  };
+  patchGallery();
+  // Reintentar cuando la galería termine de cargarse
+  setTimeout(patchGallery, 600);
 }
 
 async function enviarMultaWA(id) {
@@ -6018,6 +6075,7 @@ async function enviarMultaWA(id) {
     `🏛 Municipalidad: ${muni}`,
     `💰 Monto: ${monto}`,
     `📌 Estado: ${estado}`,
+    m.lugar ? `📍 ${m.lugar}` : '',
     m.descripcion ? `📝 ${m.descripcion}` : '',
     m.comprobante_pago_url ? `🧾 Comprobante: ${window.location.origin}${m.comprobante_pago_url}` : '',
   ].filter(Boolean).join('\n');
@@ -7496,14 +7554,13 @@ async function importarMultasVerificadas() {
   });
   if (!seleccionadas.length) { showAlert('Seleccioná al menos una infracción'); return; }
 
-  // Separar imágenes pegadas manualmente (data URLs) de las URLs reales
-  // Los data URLs se suben como archivos después del import; solo se envían http(s) URLs
-  const dataUrlMap = {}; // numero_acta -> [blobOrDataUrl, ...]
+  // Todas las prueba_urls (blob:, data:, http:) se descargan desde el browser
+  // y se suben como archivos reales post-import. El browser tiene las cookies del portal.
+  const dataUrlMap = {}; // numero_acta -> [url, ...]
   const multasParaEnviar = seleccionadas.map(m => {
-    const httpUrls = [], localUrls = [];
-    (m.prueba_urls || []).forEach(u => (u.startsWith('data:') || u.startsWith('blob:') ? localUrls : httpUrls).push(u));
-    if (localUrls.length) dataUrlMap[m.numero_acta || '_noact_' + Math.random()] = localUrls;
-    return { ...m, prueba_urls: httpUrls };
+    const allUrls = (m.prueba_urls || []).filter(Boolean);
+    if (allUrls.length) dataUrlMap[m.numero_acta || '_noact_' + Math.random()] = allUrls;
+    return { ...m, prueba_urls: [] }; // el backend no guarda URLs, todo se sube como archivo
   });
 
   const btnImp = document.getElementById('verif-btn-importar');
@@ -7524,13 +7581,40 @@ async function importarMultasVerificadas() {
         const dataUrls = dataUrlMap[numero_acta];
         if (!dataUrls?.length) continue;
         for (let i = 0; i < dataUrls.length; i++) {
-          try {
-            const blob = await fetch(dataUrls[i]).then(r => r.blob());
-            const ext = blob.type.split('/')[1] || 'png';
-            const fd = new FormData();
-            fd.append('adjuntos', blob, `prueba_${numero_acta}_${i+1}.${ext}`);
-            await fetch(`/api/multas/${multaId}/adjuntos`, { method: 'POST', body: fd });
-          } catch(_) {}
+          const url = dataUrls[i];
+          let saved = false;
+          // Intentar descargar desde el browser (tiene cookies del portal)
+          if (!url.startsWith('blob:') && !url.startsWith('data:')) {
+            // URL externa: probar fetch con credenciales (cookies)
+            try {
+              const resp = await fetch(url, { credentials: 'include', mode: 'cors' });
+              if (resp.ok) {
+                const blob = await resp.blob();
+                const ext = blob.type.split('/')[1]?.split('+')[0] || 'jpg';
+                const fd = new FormData();
+                fd.append('adjuntos', blob, `prueba_${numero_acta}_${i+1}.${ext}`);
+                await fetch(`/api/multas/${multaId}/adjuntos`, { method: 'POST', body: fd });
+                saved = true;
+              }
+            } catch(_) {}
+            // Fallback: si CORS bloqueó o falló, guardar como link para no perder la referencia
+            if (!saved) {
+              await fetch(`/api/multas/${multaId}/adjuntos/link`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url, nombre: `Prueba ${numero_acta} #${i+1}` })
+              }).catch(() => {});
+            }
+          } else {
+            // blob: o data: — subir directamente
+            try {
+              const blob = url.startsWith('data:') ? await fetch(url).then(r => r.blob()) : await fetch(url).then(r => r.blob());
+              const ext = blob.type.split('/')[1]?.split('+')[0] || 'png';
+              const fd = new FormData();
+              fd.append('adjuntos', blob, `prueba_${numero_acta}_${i+1}.${ext}`);
+              await fetch(`/api/multas/${multaId}/adjuntos`, { method: 'POST', body: fd });
+            } catch(_) {}
+          }
         }
       }
     }
@@ -8113,6 +8197,11 @@ function openPagoModal(id = null, readOnly = false) {
     const nowLocal = new Date(Date.now() - new Date().getTimezoneOffset()*60000).toISOString().substring(0,16);
     document.getElementById('pg-fecha').value = nowLocal;
     document.getElementById('modal-pago-title').textContent = 'Cargar Pago o Reintegro';
+    ['pg-rend-alquiler','pg-rend-peajes','pg-rend-deuda','pg-rend-productos','pg-rend-otro'].forEach(eid => {
+      const el = document.getElementById(eid);
+      if (el) { el.value = ''; el.dataset.raw = ''; }
+    });
+    onPagoTipoChange();
   }
   openModal('modal-pago');
   if (id) _loadPagoEnModal(id, readOnly);
@@ -14327,7 +14416,24 @@ async function shareTurnosDetalleWA() {
   const saldoMonto = '$ ' + Math.abs(totSald).toLocaleString('es-AR', {minimumFractionDigits:2, maximumFractionDigits:2});
   txt += `\n\n*Saldo: ${saldoSign}${saldoMonto}*`;
 
-  await openWhatsAppModal(null, 'Detalle');
+  // Pre-generar XLS para adjuntar
+  if (window.XLSX) {
+    const aoa = [['Fecha', 'Tipo', 'Importe/Alquiler', 'Peajes', 'Multas/Deuda', 'Total', 'Medio']];
+    rows.forEach(r => aoa.push([r.label, r.tipo === 'turno' ? 'Turno' : 'Rendición', r.alquiler||0, r.peajes||0, r.multas||0, r.total||0, r.medio||'']));
+    const totAlq = rows.reduce((s, r) => s + r.alquiler, 0);
+    const totPj  = rows.reduce((s, r) => s + r.peajes,   0);
+    const totMul = rows.reduce((s, r) => s + r.multas,   0);
+    aoa.push([]);
+    aoa.push(['SALDO', '', totAlq, totPj, totMul, totSald, '']);
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{wch:22},{wch:12},{wch:16},{wch:14},{wch:14},{wch:16},{wch:22}];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Detalle');
+    const fname = `Detalle_${chofer.replace(/\s+/g,'_')}_${desde}${hasta?'_'+hasta:''}.xlsx`;
+    _waPreXls = { base64: XLSX.write(wb, { bookType: 'xlsx', type: 'base64' }), filename: fname };
+  }
+
+  await openWhatsAppModal(null, `Detalle ${chofer}`);
   const waEl = document.getElementById('wa-message');
   if (waEl) waEl.value = txt;
 }
@@ -14881,7 +14987,6 @@ async function _loadWAMultaAdjs(multas) {
 
   results.forEach((adjs, i) => {
     adjs.forEach(a => {
-      if (a.tipo === 'link') return; // links externos no se envían como archivo
       _waMultaAdjs.push({ url: a.url, nombre: a.nombre_original || a.url.split('/').pop(), tipo: a.tipo, multaId: multas[i].id });
     });
   });

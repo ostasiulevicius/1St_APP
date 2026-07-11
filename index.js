@@ -1236,6 +1236,21 @@ app.get('/api/multas/:id/adjuntos', async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
+// Proxy para descargar imágenes externas (links de actas de municipios) — evita CORS en el browser
+app.get('/api/proxy-imagen', requireAuth, async (req, res) => {
+  const { url } = req.query;
+  if (!url) return res.status(400).json({ message: 'url requerida' });
+  try {
+    const resp = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    if (!resp.ok) return res.status(resp.status).json({ message: 'No se pudo descargar la imagen' });
+    const ct = resp.headers.get('content-type') || 'image/jpeg';
+    const buf = Buffer.from(await resp.arrayBuffer());
+    res.set('Content-Type', ct);
+    res.set('Cache-Control', 'private, max-age=300');
+    res.send(buf);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
 app.post('/api/multas/:id/adjuntos', (req, res, next) => getUploadMultaAdj().array('adjuntos', 20)(req, res, next), async (req, res) => {
   try {
     const db = await getPool();
@@ -2402,12 +2417,22 @@ app.get('/api/telegram/status', requireAuth, (req, res) => {
 
 app.post('/api/telegram/send', requireAuth, async (req, res) => {
   if (!_tgBot) return res.status(503).json({ message: 'Bot de Telegram no configurado. Agregá TELEGRAM_BOT_TOKEN en .env' });
-  const { chatId, message, xlsBase64, xlsFilename, audit } = req.body;
+  const { chatId, message, xlsBase64, xlsFilename, mediaBase64, mediaMime, mediaFilename, audit } = req.body;
   if (!chatId) return res.status(400).json({ message: 'chatId requerido' });
   try {
     if (xlsBase64 && xlsFilename) {
       const buf = Buffer.from(xlsBase64, 'base64');
       await _tgBot.sendDocument(chatId, buf, { caption: message || '' }, { filename: xlsFilename, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    } else if (mediaBase64 && mediaMime) {
+      const buf = Buffer.from(mediaBase64, 'base64');
+      const fname = mediaFilename || 'adjunto';
+      if (mediaMime.startsWith('image/')) {
+        await _tgBot.sendPhoto(chatId, buf, { caption: message || '' }, { filename: fname, contentType: mediaMime });
+      } else if (mediaMime.startsWith('video/')) {
+        await _tgBot.sendVideo(chatId, buf, { caption: message || '' }, { filename: fname, contentType: mediaMime });
+      } else {
+        await _tgBot.sendDocument(chatId, buf, { caption: message || '' }, { filename: fname, contentType: mediaMime });
+      }
     } else {
       await _tgBot.sendMessage(chatId, message || '', { parse_mode: 'Markdown' });
     }
