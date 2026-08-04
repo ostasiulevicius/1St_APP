@@ -161,23 +161,28 @@ Respondé ÚNICAMENTE con JSON válido, sin texto adicional:
   "banco_destino": "",
   "motivo": "",
   "nro_operacion": "",
-  "codigo_identificacion": ""
+  "codigo_identificacion": "",
+  "es_transferencia": ""
 }
 
-REGLAS PARA TRANSFERENCIAS (BNA+, Mercado Pago, Brubank, Galicia, etc.):
+REGLA CRÍTICA — COMPROBANTE DE TRANSFERENCIA:
+Si el documento dice "Comprobante de transferencia", "Comprobante de pago", "Transferencia realizada", "Envío de dinero" o es emitido por Mercado Pago, MercadoPago, BNA+, Brubank, Galicia, Santander, MODO, Naranja X, Ualá, Personal Pay, o cualquier banco/billetera digital: establecé es_transferencia="true" SIEMPRE, aunque no puedas leer todos los campos.
+
+REGLAS PARA TRANSFERENCIAS:
+- En comprobantes Mercado Pago: la sección "De" contiene el ORIGEN (nombre_origen, cuil_origen, banco_origen). El campo "CVU:" dentro de "De" → cbu_origen. La sección "Para" contiene el DESTINATARIO (nombre_destino, cuil_destino, banco_destino). El campo "CBU:" dentro de "Para" → cbu_destino.
 - "Destinatario" o "Receptor" → nombre_destino. El CUIT/CUIL asociado → cuil_destino. El "Alias" → alias_destino. El "Banco" del destinatario → banco_destino.
 - "Ordenante" o "Remitente" o quien envía → nombre_origen. Su CUIT/CUIL → cuil_origen. Su alias → alias_origen. Su banco → banco_origen.
 - En recibos BNA+: el campo "Destinatario" con su CUIT y Alias corresponden al DESTINO, NO al origen.
-- En comprobantes Mercado Pago: la sección "Para" o "Para (Destino)" contiene el DESTINATARIO (nombre_destino, cuil_destino, banco_destino). El campo "CBU:" dentro de "Para" → cbu_destino. El campo "CVU:" dentro de "De" → cbu_origen.
 - cbu_origen / cbu_destino: CVU (22 dígitos, empieza con 0000) o CBU (22 dígitos). SIEMPRE extraer si está presente bajo la sección correspondiente.
-- alias_destino / alias_origen: texto tipo nombre.apellido.banco (ej: seba.stasiu.buepp) o el alias que aparezca en la sección de destino/origen.
-- codigo_identificacion: código alfanumérico del comprobante (ej: R7Z6OQNDWIGOGERESEXYPO).
-- total: monto transferido o total, solo dígitos y punto decimal (sin separadores de miles, sin $).
-- nro_operacion: número de transacción o número de operación del comprobante.
-- fecha_emision: en formato YYYY-MM-DD HH:MM:SS si tiene hora, o YYYY-MM-DD si solo tiene fecha. Convertí "DD/MM/AAAA HH:MM:SS" al formato ISO.
-- tipo_autorizacion: "CAE" si dice CAE, "CAEA" si dice CAEA, "CAI" si dice CAI. Solo facturas electrónicas argentinas tienen esto.
+- alias_destino / alias_origen: texto tipo nombre.apellido.banco o el alias que aparezca.
+- codigo_identificacion: código alfanumérico del comprobante (ej: Z0KV87947867PYO09PEYDX, R7Z6OQNDWIGOGERESEXYPO).
+- total: monto transferido en formato numérico sin separadores de miles y sin $. En Argentina el punto es separador de miles: "$ 50.000" → "50000". "$ 1.250,50" → "1250.50".
+- nro_operacion: número de transacción o número de operación (ej: "169343776132", "Número de operación de Mercado Pago").
+- fecha_emision: en formato YYYY-MM-DD HH:MM:SS si tiene hora, o YYYY-MM-DD si solo fecha. Convertí "Viernes, 17 de julio de 2026 a las 21:08 hs" → "2026-07-17 21:08:00".
+- tipo_autorizacion: "CAE"/"CAEA"/"CAI". Solo facturas electrónicas argentinas tienen esto.
 - nro_autorizacion: número del CAE/CAEA/CAI (hasta 14 dígitos).
 - vto_autorizacion: fecha de vencimiento del CAE/CAEA/CAI en formato YYYY-MM-DD.
+- es_transferencia: "true" si es comprobante de transferencia/pago bancario/digital, "false" si es factura/remito.
 - Dejá vacío lo que no encuentres.` }
   ];
   if (isImage) {

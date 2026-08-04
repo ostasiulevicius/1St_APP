@@ -61,10 +61,12 @@ class DropZone {
 
   constructor(opts = {}) {
     const { mountId, id, label = 'Adjuntá un archivo', icon = 'fa-file',
-            task = 'foto', onExtract, onFileSet, onUpload, camera = true } = opts;
-    this.id        = id;
-    this.taskKey   = task;
-    this.taskCfg   = DropZone.TASKS[task] || DropZone.TASKS.foto;
+            task = 'foto', onExtract, onFileSet, onUpload, camera = true,
+            uploadEndpoint = '/api/upload/turno-foto' } = opts;
+    this.id             = id;
+    this.taskKey        = task;
+    this.taskCfg        = DropZone.TASKS[task] || DropZone.TASKS.foto;
+    this.uploadEndpoint = uploadEndpoint;
     this.onExtract = onExtract || null;
     this.onFileSet = onFileSet || null;
     this.onUpload  = onUpload  || null;
@@ -203,7 +205,7 @@ class DropZone {
     // Auto-upload inmediato al servidor — STANDARD DropZone
     const fd = new FormData();
     fd.append('file', file, file.name);
-    fetch('/api/upload/turno-foto', { method: 'POST', body: fd })
+    fetch(this.uploadEndpoint, { method: 'POST', body: fd })
       .then(r => r.ok ? r.json() : Promise.reject())
       .then(d => {
         if (d?.url) {
@@ -583,6 +585,7 @@ const _EXPORT_TABLES = [
   { tableId: 'table-entregas',       label: 'Entregas Stock',  sectionId: 'tab-stock' },
   { tableId: 'table-rendiciones',    label: 'Rendiciones',     sectionId: 'tab-rendiciones' },
   { tableId: 'table-peajes',         label: 'Peajes',          sectionId: 'tab-peajes' },
+  { tableId: 'table-arca',           label: 'ARCA',            sectionId: 'tab-arca' },
   { tableId: 'table-finanzas',       label: 'Finanzas',        sectionId: 'tab-finanzas' },
 ];
 
@@ -593,24 +596,36 @@ const _EXPORT_TABLES = [
 function injectExportBar(tableId, label) {
   const table = document.getElementById(tableId);
   if (!table) return;
-  const barId = `export-bar-${tableId}`;
-  const existing = document.getElementById(barId);
-  if (existing) existing.remove(); // recrear siempre para que quede visible
 
-  const bar = document.createElement('div');
-  bar.className = 'table-export-bar';
-  bar.id = barId;
-  bar.innerHTML = `
-    <span style="font-size:11px;color:var(--placeholder-color);flex:1;">${label}</span>
-    <button class="btn-export" onclick="exportTableToXLS('${tableId}','${label}')" title="Exportar a Excel">
-      <i class="fa-solid fa-file-excel"></i> XLS
-    </button>
-    <button class="btn-export btn-wa" onclick="openWhatsAppModal('${tableId}','${label}')" title="Enviar por WhatsApp">
-      <i class="fa-brands fa-whatsapp"></i> WhatsApp
-    </button>`;
+  // Buscar el filter-bar en la misma sección para inyectar los botones ahí
+  const section = table.closest('section, .content-view, .modal-body') || table.parentElement;
+  const filterBar = section?.querySelector('.filter-bar');
+  const btnGroupId = `export-btns-${tableId}`;
+  document.getElementById(btnGroupId)?.remove(); // limpiar anterior
+
+  if (filterBar) {
+    // Inyectar XLS + WA directamente en el filter-bar existente (sin fila extra)
+    const grp = document.createElement('div');
+    grp.id = btnGroupId;
+    grp.style.cssText = 'display:flex;gap:6px;align-items:flex-end;margin-left:auto;';
+    grp.innerHTML = `
+      <button class="btn-export" onclick="exportTableToXLS('${tableId}','${label}')" title="Exportar a Excel">
+        <i class="fa-solid fa-file-excel"></i> XLS
+      </button>
+      <button class="btn-export btn-wa" onclick="openWhatsAppModal('${tableId}','${label}')" title="Enviar por WhatsApp">
+        <i class="fa-brands fa-whatsapp"></i> WhatsApp
+      </button>`;
+    // Si ya hay un badge con margin-left:auto, insertar antes de él
+    const badge = filterBar.querySelector('[style*="margin-left:auto"]');
+    if (badge) {
+      grp.style.marginLeft = ''; // el badge ya tiene el auto
+      filterBar.insertBefore(grp, badge);
+    } else {
+      filterBar.appendChild(grp);
+    }
+  }
 
   // Asegurar que la tabla esté dentro de un .table-container (para scroll vertical + botones)
-  // PRIMERO hacer el wrap, DESPUÉS insertar la bar para que quede antes del container
   let tableWrap = table.closest('.table-container');
   if (!tableWrap) {
     const responsive = table.closest('.table-responsive') || table;
@@ -626,9 +641,9 @@ function injectExportBar(tableId, label) {
     }
   }
 
-  // Insertar bar ANTES del table-container (o antes de la tabla si no hay container)
+  // Ya no insertamos barra separada — solo hacemos el wrap y scroll nav
   const insertBefore = tableWrap || (table.closest('.table-responsive') || table);
-  insertBefore.parentNode.insertBefore(bar, insertBefore);
+  void insertBefore; // referencia conservada para el scrollNav abajo
 
   if (tableWrap) {
     _attachScrollNav(tableWrap, tableWrap);
@@ -662,9 +677,14 @@ function exportTableToXLS(tableId, label) {
       }
     });
     XLSX.utils.book_append_sheet(wb, ws, label.substring(0, 31));
-    const fecha = new Date().toISOString().split('T')[0];
-    XLSX.writeFile(wb, `${label}_${fecha}.xlsx`);
-    showToast(`📊 ${label}.xlsx descargado`);
+    const _now = new Date();
+    const _pad = n => String(n).padStart(2,'0');
+    const _fechaLocal = `${_now.getFullYear()}-${_pad(_now.getMonth()+1)}-${_pad(_now.getDate())}`;
+    const _horaLocal  = `${_pad(_now.getHours())}-${_pad(_now.getMinutes())}`;
+    const _filterSuffix = window._exportFiltersMap?.[tableId]?.() || '';
+    const _fname = [label, _filterSuffix, _fechaLocal, _horaLocal].filter(Boolean).join('_');
+    XLSX.writeFile(wb, `${_fname}.xlsx`);
+    showToast(`📊 ${_fname}.xlsx descargado`);
   } catch(e) {
     showToast('Error al exportar: ' + e.message);
   }
@@ -824,7 +844,7 @@ async function openWhatsAppModal(tableId, label, preselect = null) {
     const st  = document.getElementById('wa-status');
     const sst = document.getElementById('wa-send-status');
     if (!d.online) {
-      if (st) st.innerHTML = `<span style="color:orange;">⚠️ Bot no conectado</span>
+      if (st) st.innerHTML = `<span style="background:#e07b00;color:#fff;padding:2px 8px;border-radius:6px;font-weight:600;">⚠️ Bot no conectado</span>
         <button type="button" onclick="waReconectarDesdeModal()" class="btn btn-sm" style="margin-left:10px;padding:2px 10px;font-size:11px;background:#25d366;color:#fff;border:none;border-radius:6px;cursor:pointer;">
           <i class="fa-solid fa-rotate"></i> Reconectar / Nuevo QR
         </button>`;
@@ -834,13 +854,13 @@ async function openWhatsAppModal(tableId, label, preselect = null) {
     }
   }).catch(e => {
     const st = document.getElementById('wa-status');
-    if (st) { st.innerHTML = `<span style="color:orange;">⚠️ No se pudo verificar estado del bot</span>`; }
+    if (st) { st.innerHTML = `<span style="background:#e07b00;color:#fff;padding:2px 8px;border-radius:6px;font-weight:600;">⚠️ No se pudo verificar estado del bot</span>`; }
     console.warn('[bot-status]', e);
   });
   // Mostrar/ocultar el toggle XLS según si hay tabla o XLS pre-generado
   const xlsToggle = document.getElementById('wa-xls-toggle');
   const hasXls = !!(tableId || _waPreXls);
-  if (xlsToggle) xlsToggle.style.display = hasXls ? '' : 'none';
+  if (xlsToggle) xlsToggle.style.display = hasXls ? 'flex' : 'none';
 
   openModal('modal-whatsapp');
   requestAnimationFrame(() => {
@@ -950,15 +970,15 @@ async function _waCheckTelegramStatus() {
   try {
     const d = await fetch('/api/telegram/status').then(r => r.json());
     if (!d.configured) {
-      st.innerHTML = `<span style="color:orange;">⚠️ Token no configurado</span>
+      st.innerHTML = `<span style="background:#e07b00;color:#fff;padding:2px 8px;border-radius:6px;font-weight:600;">⚠️ Token no configurado</span>
         <a href="#" onclick="event.preventDefault();" style="margin-left:8px;font-size:11px;color:var(--accent-color);">Agregá TELEGRAM_BOT_TOKEN en .env</a>`;
     } else if (!d.online) {
-      st.innerHTML = `<span style="color:orange;">⚠️ Bot offline — verificá el token</span>`;
+      st.innerHTML = `<span style="background:#e07b00;color:#fff;padding:2px 8px;border-radius:6px;font-weight:600;">⚠️ Bot offline — verificá el token</span>`;
     } else {
       st.innerHTML = `<span style="color:var(--color-success);">✓ Bot @${d.username} conectado</span>`;
     }
   } catch(_) {
-    st.innerHTML = `<span style="color:orange;">⚠️ No se pudo verificar el bot</span>`;
+    st.innerHTML = `<span style="background:#e07b00;color:#fff;padding:2px 8px;border-radius:6px;font-weight:600;">⚠️ No se pudo verificar el bot</span>`;
   }
 }
 
@@ -968,7 +988,7 @@ async function _waCheckBotStatus() {
   try {
     const d = await fetch('/api/bot-status').then(r => r.json());
     if (!d.online) {
-      st.innerHTML = `<span style="color:orange;">⚠️ Bot no conectado</span>
+      st.innerHTML = `<span style="background:#e07b00;color:#fff;padding:2px 8px;border-radius:6px;font-weight:600;">⚠️ Bot no conectado</span>
         <button type="button" onclick="waReconectarDesdeModal()" class="btn btn-sm" style="margin-left:10px;padding:2px 10px;font-size:11px;background:#25d366;color:#fff;border:none;border-radius:6px;cursor:pointer;">
           <i class="fa-solid fa-rotate"></i> Reconectar / Nuevo QR
         </button>`;
@@ -976,7 +996,7 @@ async function _waCheckBotStatus() {
       st.innerHTML = '<span style="color:var(--color-success);">✓ Bot conectado</span>';
     }
   } catch(_) {
-    st.innerHTML = `<span style="color:orange;">⚠️ No se pudo verificar estado del bot</span>`;
+    st.innerHTML = `<span style="background:#e07b00;color:#fff;padding:2px 8px;border-radius:6px;font-weight:600;">⚠️ No se pudo verificar estado del bot</span>`;
   }
 }
 
@@ -1337,6 +1357,9 @@ document.addEventListener('focusout', e => {
 });
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Registrar ChartDataLabels globalmente una sola vez al arrancar
+  if (window.ChartDataLabels) Chart.register(ChartDataLabels);
+
   // Inicializar selects buscables
   initAllSearchableSelects();
 
@@ -1669,7 +1692,7 @@ function closeModal(id) {
       fetch('/api/bot-status').then(r => r.json()).then(d => {
         if (st) st.innerHTML = d.online
           ? '<span style="color:var(--color-success);">✓ Bot conectado</span>'
-          : '<span style="color:orange;">⚠️ Bot no conectado</span>';
+          : '<span style="background:#e07b00;color:#fff;padding:2px 8px;border-radius:6px;font-weight:600;">⚠️ Bot no conectado</span>';
         if (sst && d.online) sst.innerHTML = '';
       }).catch(() => {});
     }
@@ -1804,6 +1827,15 @@ function formatCurrency(amount) {
 // Inputs de monto con separador de miles (genérico)
 // ── Money input helpers ───────────────────────────────────────────────────
 // Format: 1,320,000.50  (comma=thousands, dot=decimals)
+// Formatea campo celular para uso en WhatsApp: solo dígitos (sin +, espacios, guiones, paréntesis)
+function fmtPhoneInput(el) {
+  const pos = el.selectionStart;
+  const prev = el.value.length;
+  el.value = el.value.replace(/[\s+\-().]/g, '');
+  const diff = prev - el.value.length;
+  el.setSelectionRange(Math.max(0, pos - diff), Math.max(0, pos - diff));
+}
+
 function fmtAmountInput(el) {
   const cursor = el.selectionStart;
   const prevLen = el.value.length;
@@ -2036,7 +2068,7 @@ async function loadChoferes() {
         </td>
         <td><span class="badge ${c.activo ? 'badge-success' : 'badge-danger'}">${c.activo ? 'activo' : 'inactivo'}</span></td>
         <td style="text-align:center;white-space:nowrap;">
-          <button class="tbl-action-btn tbl-btn-view"   onclick="editChofer(${c.id})"           title="Ver / Detalle"><i class="fa-solid fa-eye"></i></button>
+          <button class="tbl-action-btn tbl-btn-view"   onclick="verChofer(${c.id})"            title="Ver / Detalle"><i class="fa-solid fa-eye"></i></button>
           <button class="tbl-action-btn tbl-btn-edit"   onclick="editChofer(${c.id})"           title="Editar"><i class="fa-solid fa-pen-to-square"></i></button>
           ${canDelete()
             ? `<button class="tbl-action-btn tbl-btn-delete" onclick="deleteChofer(${c.id})"    title="Eliminar"><i class="fa-solid fa-trash"></i></button>`
@@ -2053,9 +2085,37 @@ async function loadChoferes() {
   }
 }
 
+function verChofer(id) {
+  editChofer(id);
+  // Poner en modo solo lectura
+  const form = document.getElementById('form-chofer');
+  if (form) {
+    form.querySelectorAll('input,textarea,select').forEach(el => {
+      el.readOnly = true;
+      el.style.pointerEvents = 'none';
+    });
+    form.style.pointerEvents = 'none';
+    // Pero los botones ojo deben seguir siendo clicables en modo detalle
+    form.querySelectorAll('.dz-overlay-eye').forEach(el => el.style.pointerEvents = 'auto');
+  }
+  document.getElementById('btn-submit-chofer').style.display = 'none';
+  _setModalTitle('modal-chofer-title', '<i class="fa-solid fa-id-badge"></i>', 'Detalle Chofer',
+    (() => { const c = cachedChoferes.find(x => x.id === id); return c ? (c.apellido ? `${c.apellido}, ${c.nombre||''}` : c.nombre) : ''; })()
+  );
+}
+
 function editChofer(id) {
   const chofer = cachedChoferes.find(c => c.id === id);
   if (!chofer) return;
+
+  // Asegurar que el form esté en modo editable (por si venía de verChofer)
+  const _form = document.getElementById('form-chofer');
+  if (_form) {
+    _form.style.pointerEvents = '';
+    _form.querySelectorAll('input,textarea,select').forEach(el => { el.readOnly = false; el.style.pointerEvents = ''; });
+  }
+  const _sb = document.getElementById('btn-submit-chofer');
+  if (_sb) _sb.style.display = '';
 
   document.getElementById('ch-id').value = chofer.id;
   document.getElementById('ch-nombre').value = chofer.nombre;
@@ -2077,6 +2137,11 @@ function editChofer(id) {
   
   document.getElementById('ch-fiscal').value = chofer.condicion_fiscal_id || '';
   document.getElementById('ch-activo').checked = chofer.activo === 1;
+  document.getElementById('ch-wapp2').value         = chofer.telefono_alt1 || '';
+  document.getElementById('ch-wapp2-vinculo').value = chofer.telefono_alt1_vinculo || '';
+  document.getElementById('ch-wapp3').value         = chofer.telefono_alt2 || '';
+  document.getElementById('ch-wapp3-vinculo').value = chofer.telefono_alt2_vinculo || '';
+  document.getElementById('ch-liquidacion').value   = chofer.liquidacion || '';
 
   _setModalTitle('modal-chofer-title', '<i class="fa-solid fa-id-badge"></i>', 'Modificar Chofer',
     chofer.apellido ? `${chofer.apellido}, ${chofer.nombre||''}` : chofer.nombre);
@@ -2084,7 +2149,7 @@ function editChofer(id) {
   document.getElementById('ch-activo-container').style.display = 'flex';
 
   // Limpiar dropzones completamente antes de cargar el nuevo chofer
-  ['ch-prev-dni-frente','ch-prev-dni-dorso','ch-prev-reg-frente','ch-prev-reg-dorso'].forEach(id => {
+  ['ch-prev-dni-frente','ch-prev-dni-dorso','ch-prev-reg-frente','ch-prev-reg-dorso','ch-prev-calif1','ch-prev-calif2'].forEach(id => {
     const el = document.getElementById(id); if (el) { el.src=''; el.style.display='none'; }
   });
   const _dzDefaults = [
@@ -2092,13 +2157,15 @@ function editChofer(id) {
     ['ch-drop-dni-dorso',  'DNI Dorso'],
     ['ch-drop-reg-frente', 'Registro Frente'],
     ['ch-drop-reg-dorso',  'Registro Dorso'],
+    ['ch-drop-calif1',     'Calificación 1'],
+    ['ch-drop-calif2',     'Calificación 2'],
   ];
   _dzDefaults.forEach(([dzId, label]) => {
     const dz = document.getElementById(dzId); if (!dz) return;
     dz.classList.remove('has-img');
     const sm = dz.querySelector('.dz-bottom-label'); if (sm) sm.textContent = label;
   });
-  ['ch-eye-dni-frente','ch-eye-dni-dorso','ch-eye-reg-frente','ch-eye-reg-dorso'].forEach(id => {
+  ['ch-eye-dni-frente','ch-eye-dni-dorso','ch-eye-reg-frente','ch-eye-reg-dorso','ch-eye-calif1','ch-eye-calif2'].forEach(id => {
     const el = document.getElementById(id); if (el) el.style.display='none';
   });
   Object.keys(_choferFiles).forEach(k => delete _choferFiles[k]);
@@ -2111,6 +2178,8 @@ function editChofer(id) {
     { url: chofer.dni_dorso_url,       prevId: 'ch-prev-dni-dorso',  dzId: 'ch-drop-dni-dorso',  eyeId: 'ch-eye-dni-dorso',  key: 'dni_dorso' },
     { url: chofer.registro_frente_url, prevId: 'ch-prev-reg-frente', dzId: 'ch-drop-reg-frente', eyeId: 'ch-eye-reg-frente', key: 'reg_frente' },
     { url: chofer.registro_dorso_url,  prevId: 'ch-prev-reg-dorso',  dzId: 'ch-drop-reg-dorso',  eyeId: 'ch-eye-reg-dorso',  key: 'reg_dorso' },
+    { url: chofer.calif1_url,          prevId: 'ch-prev-calif1',     dzId: 'ch-drop-calif1',     eyeId: 'ch-eye-calif1',     key: 'calif1' },
+    { url: chofer.calif2_url,          prevId: 'ch-prev-calif2',     dzId: 'ch-drop-calif2',     eyeId: 'ch-eye-calif2',     key: 'calif2' },
   ];
   const _cbust = `?t=${Date.now()}`;
   _docSlotMap.forEach(({ url, prevId, dzId, eyeId }) => {
@@ -2191,7 +2260,12 @@ async function saveChofer(e) {
     modalidad: parseModalidad(document.getElementById('ch-modalidad').value) || null,
     fecha_nacimiento: document.getElementById('ch-nacimiento').value || null,
     condicion_fiscal_id: parseInt(document.getElementById('ch-fiscal').value, 10) || null,
-    activo: isEdit ? (document.getElementById('ch-activo').checked ? 1 : 0) : 1
+    activo: isEdit ? (document.getElementById('ch-activo').checked ? 1 : 0) : 1,
+    telefono_alt1:         document.getElementById('ch-wapp2').value.trim() || null,
+    telefono_alt1_vinculo: document.getElementById('ch-wapp2-vinculo').value.trim() || null,
+    telefono_alt2:         document.getElementById('ch-wapp3').value.trim() || null,
+    telefono_alt2_vinculo: document.getElementById('ch-wapp3-vinculo').value.trim() || null,
+    liquidacion:           document.getElementById('ch-liquidacion').value || null
   };
 
   const url = isEdit ? `/api/choferes/${id}` : '/api/choferes';
@@ -2209,7 +2283,7 @@ async function saveChofer(e) {
       const savedId = isEdit ? parseInt(id) : resData.id;
       // Subir archivos de documentos nuevos/modificados/rotados
       if (savedId) {
-        const docMap = { dni_frente: 'dni_frente', dni_dorso: 'dni_dorso', reg_frente: 'registro_frente', reg_dorso: 'registro_dorso' };
+        const docMap = { dni_frente: 'dni_frente', dni_dorso: 'dni_dorso', reg_frente: 'registro_frente', reg_dorso: 'registro_dorso', calif1: 'calif1', calif2: 'calif2' };
         const fd2 = new FormData();
         let hasDocFiles = false;
         Object.entries(docMap).forEach(([key, fieldName]) => {
@@ -2222,7 +2296,7 @@ async function saveChofer(e) {
       }
       // Guardar documentos: nuevas URLs extraídas + borrados explícitos (__CLEAR__)
       const _slotToUrlKey = { dni_frente: '_dni_frente_url', dni_dorso: '_dni_dorso_url', reg_frente: '_registro_frente_url', reg_dorso: '_registro_dorso_url' };
-      const _slotToDocField = { dni_frente: 'dni_frente_url', dni_dorso: 'dni_dorso_url', reg_frente: 'registro_frente_url', reg_dorso: 'registro_dorso_url' };
+      const _slotToDocField = { dni_frente: 'dni_frente_url', dni_dorso: 'dni_dorso_url', reg_frente: 'registro_frente_url', reg_dorso: 'registro_dorso_url', calif1: 'calif1_url', calif2: 'calif2_url' };
       const hasNewUrls = _choferFiles._dni_frente_url || _choferFiles._dni_dorso_url || _choferFiles._registro_frente_url || _choferFiles._registro_dorso_url;
       if (savedId && (hasNewUrls || _clearedChoferSlots.size > 0)) {
         const docBody = {};
@@ -3051,7 +3125,15 @@ function _svcPagosUpdateSummary() {
 }
 
 function addSvcPagoRow(preset = {}) {
-  _svcPagos.push({ medio: preset.medio || 'efectivo', monto: preset.monto || '', cuenta_id: preset.cuenta_id || '', tarjeta_id: preset.tarjeta_id || '', cuotas: preset.cuotas || 1, notas: preset.notas || '' });
+  // Autocompletar con el saldo pendiente si no se especifica monto
+  let montoAuto = preset.monto || '';
+  if (!montoAuto) {
+    const costo  = getAmt('svc-costo') || 0;
+    const pagado = _svcPagos.reduce((s, p) => s + (parseFloat(p.monto) || 0), 0);
+    const saldo  = costo - pagado;
+    if (saldo > 0) montoAuto = String(saldo);
+  }
+  _svcPagos.push({ medio: preset.medio || 'efectivo', monto: montoAuto, cuenta_id: preset.cuenta_id || '', tarjeta_id: preset.tarjeta_id || '', cuotas: preset.cuotas || 1, notas: preset.notas || '' });
   renderSvcPagos();
 }
 
@@ -3070,39 +3152,69 @@ function renderSvcPagos() {
   const tarjetasOpts = (_cachedTarjetas || []).map(t =>
     `<option value="${t.id}">${_tarjetaMarcaLabel(t)} ${t.ultimos_4 ? '••'+t.ultimos_4 : ''}${t.banco_nombre ? ' · '+t.banco_nombre : ''}</option>`).join('');
 
+  const medioIcon = { efectivo:'💵', transferencia:'🏦', tarjeta:'💳', adeuda:'📋' };
+  const medioLabel = { efectivo:'Efectivo', transferencia:'Transferencia', tarjeta:'Tarjeta', adeuda:'Adeuda al Proveedor' };
+
   grid.innerHTML = _svcPagos.map((p, i) => {
-    const isTransf   = p.medio === 'transferencia';
-    const isTarjeta  = p.medio === 'tarjeta';
-    const isAdeuda   = p.medio === 'adeuda';
-    return `
-    <div style="display:grid;grid-template-columns:160px 130px 1fr auto;gap:6px;align-items:center;background:var(--bg-secondary);border-radius:8px;padding:8px 10px;">
-      <select onchange="_onSvcPagoMedio(${i},this.value)" style="font-size:13px;">
-        <option value="efectivo"      ${p.medio==='efectivo'     ?'selected':''}>💵 Efectivo</option>
-        <option value="transferencia" ${p.medio==='transferencia'?'selected':''}>🏦 Transferencia</option>
-        <option value="tarjeta"       ${p.medio==='tarjeta'      ?'selected':''}>💳 Tarjeta</option>
-        <option value="adeuda"        ${p.medio==='adeuda'       ?'selected':''}>📋 Adeuda al Proveedor</option>
-      </select>
-      <input type="text" inputmode="numeric" placeholder="$ Monto" value="${p.monto||''}"
-        style="font-size:13px;" oninput="fmtAmountInput(this);_svcPagos[${i}].monto=this.dataset.raw;_svcPagosUpdateSummary()">
-      <div style="display:flex;gap:6px;">
-        ${isTransf ? `<select style="flex:1;font-size:12px;" onchange="_svcPagos[${i}].cuenta_id=this.value">
-            <option value="">— Cuenta —</option>${cuentasOpts.replace(`value="${p.cuenta_id}"`,`value="${p.cuenta_id}" selected`)}
-          </select>` : ''}
-        ${isTarjeta ? `
-          <select style="flex:1;font-size:12px;" onchange="_svcPagos[${i}].tarjeta_id=this.value">
-            <option value="">— Tarjeta —</option>${tarjetasOpts.replace(`value="${p.tarjeta_id}"`,`value="${p.tarjeta_id}" selected`)}
+    const isTransf  = p.medio === 'transferencia';
+    const isTarjeta = p.medio === 'tarjeta';
+    const isAdeuda  = p.medio === 'adeuda';
+
+    const extraFields = isTransf ? `
+        <div style="margin-top:8px;">
+          <label style="font-size:10px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px;">Cuenta destino</label>
+          <select style="width:100%;margin-top:3px;" onchange="_svcPagos[${i}].cuenta_id=this.value">
+            <option value="">— Seleccionar cuenta —</option>${cuentasOpts.replace(`value="${p.cuenta_id}"`,`value="${p.cuenta_id}" selected`)}
           </select>
-          <input type="number" min="1" max="48" value="${p.cuotas||1}" placeholder="Ctas" style="width:54px;font-size:12px;"
-            onchange="_svcPagos[${i}].cuotas=this.value" title="Cantidad de cuotas">` : ''}
-        ${isAdeuda ? `<input type="text" placeholder="Notas (opcional)" value="${p.notas||''}" style="flex:1;font-size:12px;"
-            oninput="_svcPagos[${i}].notas=this.value">` : ''}
-        ${!isTransf && !isTarjeta && !isAdeuda ? `<span style="opacity:.35;font-size:12px;padding:0 4px;">—</span>` : ''}
+        </div>` : isTarjeta ? `
+        <div style="margin-top:8px;display:grid;grid-template-columns:1fr 80px;gap:8px;">
+          <div>
+            <label style="font-size:10px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px;">Tarjeta</label>
+            <select style="width:100%;margin-top:3px;" onchange="_svcPagos[${i}].tarjeta_id=this.value">
+              <option value="">— Seleccionar tarjeta —</option>${tarjetasOpts.replace(`value="${p.tarjeta_id}"`,`value="${p.tarjeta_id}" selected`)}
+            </select>
+          </div>
+          <div>
+            <label style="font-size:10px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px;">Cuotas</label>
+            <input type="number" min="1" max="48" value="${p.cuotas||1}" style="width:100%;margin-top:3px;"
+              onchange="_svcPagos[${i}].cuotas=this.value">
+          </div>
+        </div>` : isAdeuda ? `
+        <div style="margin-top:8px;">
+          <label style="font-size:10px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px;">Notas</label>
+          <input type="text" placeholder="Observaciones (opcional)" value="${p.notas||''}" style="width:100%;margin-top:3px;"
+            oninput="_svcPagos[${i}].notas=this.value">
+        </div>` : '';
+
+    return `
+    <div style="background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:10px;padding:14px 16px;position:relative;">
+      <button type="button" onclick="removeSvcPagoRow(${i})"
+        style="position:absolute;top:10px;right:10px;background:none;border:none;color:var(--text-secondary);cursor:pointer;padding:2px 6px;border-radius:4px;font-size:14px;line-height:1;"
+        title="Eliminar">×</button>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start;">
+        <div>
+          <label style="font-size:10px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px;">Medio de pago</label>
+          <select onchange="_onSvcPagoMedio(${i},this.value)" style="width:100%;margin-top:3px;">
+            <option value="efectivo"      ${p.medio==='efectivo'     ?'selected':''}>💵 Efectivo</option>
+            <option value="transferencia" ${p.medio==='transferencia'?'selected':''}>🏦 Transferencia</option>
+            <option value="tarjeta"       ${p.medio==='tarjeta'      ?'selected':''}>💳 Tarjeta</option>
+            <option value="adeuda"        ${p.medio==='adeuda'       ?'selected':''}>📋 Adeuda al Proveedor</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:10px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px;">Monto</label>
+          <input type="text" inputmode="numeric" placeholder="0" value="${p.monto ? Number(p.monto).toLocaleString('es-AR') : ''}"
+            style="width:100%;margin-top:3px;font-size:22px;font-weight:700;text-align:right;color:var(--accent-color);"
+            oninput="fmtAmountInput(this);_svcPagos[${i}].monto=this.dataset.raw;_svcPagosUpdateSummary()">
+        </div>
       </div>
-      <button type="button" onclick="removeSvcPagoRow(${i})" style="background:none;border:none;color:var(--color-error);cursor:pointer;padding:4px;">
-        <i class="fa-solid fa-xmark"></i>
-      </button>
+      ${extraFields}
     </div>`;
-  }).join('') || '<div style="opacity:.4;text-align:center;padding:20px;font-size:13px;">Sin pagos cargados — hacé clic en "Agregar pago"</div>';
+  }).join('') || `<div style="text-align:center;padding:28px 0;color:var(--text-secondary);font-size:13px;">
+      <i class="fa-solid fa-credit-card" style="font-size:24px;margin-bottom:8px;display:block;opacity:.3;"></i>
+      Sin pagos cargados — hacé clic en "+ Agregar pago"
+    </div>`;
 
   _svcPagosUpdateSummary();
 }
@@ -3142,6 +3254,8 @@ function openAddProveedorModal() {
   document.getElementById('prov-lat').value = '';
   document.getElementById('prov-lng').value = '';
   document.getElementById('prov-gps-status').textContent = '';
+  hideInlineMap('prov-map');
+  const mb = document.getElementById('prov-map-btn'); if (mb) mb.style.display = 'none';
   document.getElementById('modal-proveedor-title').innerText = 'Alta de Proveedor';
   document.getElementById('btn-submit-proveedor').innerText = 'Registrar';
   document.getElementById('prov-activo-container').style.display = 'none';
@@ -3359,7 +3473,15 @@ async function loadServices() {
     });
     _cachedServices = services;
     const badge = document.getElementById('svc-total-badge');
-    if (badge) badge.textContent = services.length ? `Total: ${formatCurrency(totalCosto)}` : '';
+    if (badge) {
+      if (services.length) animateCounter(badge, totalCosto, v => formatCurrency(v));
+      else badge.textContent = '';
+    }
+    const svcCountBadge = document.getElementById('svc-count-badge');
+    if (svcCountBadge) svcCountBadge.textContent = services.length ? `${services.length} service${services.length !== 1 ? 's' : ''}` : '';
+    const svcRow = document.getElementById('svc-totals-row');
+    if (svcRow) svcRow.style.display = services.length ? '' : 'none';
+    staggerTableRows(tbody);
     bindHeaderEvents();
     injectExportBar('table-services', 'Services');
   } catch (error) {
@@ -3390,78 +3512,316 @@ async function _populateServicesFilters() {
   } catch(_) {}
 }
 
+let _svcGrChartEvol = null, _svcGrChartLine = null, _svcGrChartVeh = null, _svcGrChartProv = null, _svcGrChartTipo = null;
+
 function openServicesGraficos() {
-  const data = _cachedServices;
-  if (!data || !data.length) { showToast('No hay services para graficar', 'warning'); return; }
-
-  // Agrupar por proveedor
-  const byProv = {};
-  const byMes  = {};
-  data.forEach(s => {
-    const prov  = s.proveedor || 'Sin proveedor';
-    const costo = parseFloat(s.costo || s.costo_materiales || 0);
-    byProv[prov] = (byProv[prov] || 0) + costo;
-    const mes = s.fecha ? s.fecha.substring(0, 7) : '—';
-    byMes[mes]  = (byMes[mes]  || 0) + costo;
-  });
-
-  const provEntries = Object.entries(byProv).sort((a,b) => b[1]-a[1]);
-  const mesEntries  = Object.entries(byMes).sort((a,b) => a[0].localeCompare(b[0]));
-  const fmtK = v => v >= 1000 ? `$${(v/1000).toFixed(0)}K` : `$${v.toFixed(0)}`;
-  const maxMes = Math.max(...mesEntries.map(e=>e[1]), 1);
-  const total  = provEntries.reduce((s,e)=>s+e[1], 0);
-  const COLORS  = ['#ef4444','#f97316','#eab308','#22c55e','#3b82f6','#8b5cf6','#ec4899','#14b8a6','#f59e0b','#6366f1'];
-
-  // Barras por proveedor
-  const barsProv = provEntries.map((e,i) => {
-    const pct = total > 0 ? (e[1]/total*100).toFixed(1) : 0;
-    const w   = total > 0 ? (e[1]/total*100).toFixed(1) : 0;
-    return `<div style="margin-bottom:8px;">
-      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px;">
-        <span style="max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${e[0]}</span>
-        <span style="font-weight:600;color:${COLORS[i%COLORS.length]};">${formatCurrency(e[1])} (${pct}%)</span>
-      </div>
-      <div style="height:10px;border-radius:5px;background:var(--bg-tertiary);">
-        <div style="height:100%;border-radius:5px;width:${w}%;background:${COLORS[i%COLORS.length]};transition:width .4s;"></div>
-      </div>
-    </div>`;
-  }).join('');
-
-  // Barras por mes
-  const barsMes = mesEntries.map(e => {
-    const h = Math.round(e[1]/maxMes*120);
-    const label = e[0].length === 7 ? e[0].substring(5)+'/'+e[0].substring(2,4) : e[0];
-    return `<div style="display:flex;flex-direction:column;align-items:center;gap:3px;flex:1;min-width:40px;">
-      <span style="font-size:10px;font-weight:600;color:var(--text-secondary);">${fmtK(e[1])}</span>
-      <div style="width:100%;max-width:40px;height:${h}px;background:#3b82f6;border-radius:4px 4px 0 0;min-height:4px;"></div>
-      <span style="font-size:10px;color:var(--text-secondary);">${label}</span>
-    </div>`;
-  }).join('');
+  if (!_cachedServices?.length) { showToast('No hay services para graficar', 'warning'); return; }
 
   let overlay = document.getElementById('modal-svc-graficos');
   if (!overlay) {
     overlay = document.createElement('div');
     overlay.id = 'modal-svc-graficos';
     overlay.className = 'modal-overlay';
-    overlay.innerHTML = `<div class="modal-card" style="max-width:620px;">
-      <div class="modal-header">
-        <h3><i class="fa-solid fa-chart-bar"></i> Gráficos — Services</h3>
-        <button class="btn-close" onclick="closeModal('modal-svc-graficos')">&times;</button>
-      </div>
-      <div id="svc-graficos-body" style="padding:20px;max-height:70vh;overflow-y:auto;"></div>
-    </div>`;
+    overlay.innerHTML = `
+      <div class="modal-card" style="max-width:900px;width:95%;overflow:hidden;">
+        <div class="modal-header">
+          <h3 style="margin:0;font-size:17px;font-weight:700;display:flex;align-items:center;gap:8px;">
+            <i class="fa-solid fa-chart-bar" style="color:var(--accent-color);"></i> Gráficos de Services
+          </h3>
+          <button class="btn-close" onclick="closeModal('modal-svc-graficos')">&times;</button>
+        </div>
+        <div class="modal-body" style="overflow-y:auto;max-height:calc(90vh - 60px);padding:16px 20px;">
+          <!-- Filtros -->
+          <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px;">
+            <div class="form-group filter-col" style="margin:0;">
+              <label class="form-label" style="font-size:11px;">Desde</label>
+              <input type="date" id="svc-gr-desde" class="form-control" style="width:125px;">
+            </div>
+            <div class="form-group filter-col" style="margin:0;">
+              <label class="form-label" style="font-size:11px;">Hasta</label>
+              <input type="date" id="svc-gr-hasta" class="form-control" style="width:125px;">
+            </div>
+            <div class="form-group" style="margin:0;">
+              <label class="form-label" style="font-size:11px;">Vehículo</label>
+              <select id="svc-gr-vehiculo" class="form-control" data-no-combo style="min-width:140px;">
+                <option value="">— Todos —</option>
+              </select>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="_renderSvcGraficos()">
+              <i class="fa-solid fa-chart-bar"></i> Actualizar
+            </button>
+            <div style="display:flex;gap:12px;align-items:center;margin-left:6px;padding-left:12px;border-left:1px solid var(--border-color);">
+              <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:12px;white-space:nowrap;">
+                <input type="checkbox" id="svc-gr-show-x" checked onchange="_renderSvcGraficos()"> Eje X
+              </label>
+              <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:12px;white-space:nowrap;">
+                <input type="checkbox" id="svc-gr-show-y" checked onchange="_renderSvcGraficos()"> Eje Y
+              </label>
+              <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:12px;white-space:nowrap;">
+                <input type="checkbox" id="svc-gr-show-lbl" onchange="_renderSvcGraficos()"> Valores
+              </label>
+            </div>
+          </div>
+          <!-- Chips de totales -->
+          <div id="svc-gr-totals" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px;"></div>
+          <!-- Fila 1: Barras agrupadas por vehículo (ancho completo) -->
+          <div style="margin-bottom:20px;">
+            <h4 style="font-size:12px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;">Costo por Mes — por Vehículo</h4>
+            <div style="position:relative;height:220px;"><canvas id="svc-chart-evol"></canvas></div>
+          </div>
+          <!-- Fila 2: Línea de evolución total (ancho completo) -->
+          <div style="margin-bottom:20px;">
+            <h4 style="font-size:12px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;">Evolución — Línea por Vehículo</h4>
+            <div style="position:relative;height:200px;"><canvas id="svc-chart-line"></canvas></div>
+          </div>
+          <!-- Fila 3: Por vehículo + Por proveedor -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px;">
+            <div>
+              <h4 style="font-size:12px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;">Por Vehículo</h4>
+              <div style="position:relative;height:200px;"><canvas id="svc-chart-veh"></canvas></div>
+            </div>
+            <div>
+              <h4 style="font-size:12px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;">Por Proveedor</h4>
+              <div style="position:relative;height:200px;"><canvas id="svc-chart-prov"></canvas></div>
+            </div>
+          </div>
+          <!-- Fila 4: Por tipo de service -->
+          <div>
+            <h4 style="font-size:12px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;">Por Tipo de Service</h4>
+            <div style="position:relative;height:200px;"><canvas id="svc-chart-tipo"></canvas></div>
+          </div>
+        </div>
+      </div>`;
     document.body.appendChild(overlay);
+    // Activar DatePicker en los inputs de fecha
+    DatePicker.init(document.getElementById('svc-gr-desde'));
+    DatePicker.init(document.getElementById('svc-gr-hasta'));
   }
 
-  document.getElementById('svc-graficos-body').innerHTML = `
-    <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;">${data.length} services · Total: <strong style="color:var(--text-primary);">${formatCurrency(total)}</strong></div>
-    <h4 style="font-size:13px;margin:0 0 10px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px;">Por Proveedor</h4>
-    <div style="margin-bottom:20px;">${barsProv}</div>
-    ${mesEntries.length > 1 ? `
-    <h4 style="font-size:13px;margin:0 0 10px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px;">Costo por Mes</h4>
-    <div style="display:flex;align-items:flex-end;gap:4px;height:160px;padding-bottom:20px;border-bottom:1px solid var(--border-color);">${barsMes}</div>` : ''}
-  `;
+  // Poblar selector de vehículos
+  const sel = document.getElementById('svc-gr-vehiculo');
+  if (sel) {
+    const patentes = [...new Set(_cachedServices.map(s => s.patente).filter(Boolean))].sort();
+    sel.innerHTML = '<option value="">— Todos —</option>' + patentes.map(p => `<option value="${p}">${p}</option>`).join('');
+  }
+
   openModal('modal-svc-graficos');
+  _renderSvcGraficos();
+}
+
+function _renderSvcGraficos() {
+  const desde  = document.getElementById('svc-gr-desde')?.value || '';
+  const hasta  = document.getElementById('svc-gr-hasta')?.value || '';
+  const vehFil = document.getElementById('svc-gr-vehiculo')?.value || '';
+  const fmtK   = v => v >= 1000000 ? `$${(v/1000000).toFixed(1)}M` : v >= 1000 ? `$${(v/1000).toFixed(0)}K` : `$${v.toFixed(0)}`;
+  const showX   = document.getElementById('svc-gr-show-x')?.checked ?? true;
+  const showY   = document.getElementById('svc-gr-show-y')?.checked ?? true;
+  const showLbl = document.getElementById('svc-gr-show-lbl')?.checked ?? false;
+  const dFmt   = { display: ctx => showLbl && (ctx.dataset.data[ctx.dataIndex] / ctx.dataset.data.reduce((a,b)=>a+b,0)) > 0.05,
+                   color:'#fff', font:{size:9,weight:'700'}, formatter: v=>fmtK(v) };
+
+  let data = _cachedServices || [];
+  if (desde) data = data.filter(s => (s.fecha||'') >= desde);
+  if (hasta) data = data.filter(s => (s.fecha||'') <= hasta);
+  if (vehFil) data = data.filter(s => s.patente === vehFil);
+
+  const costo = s => parseFloat(s.costo || s.costo_materiales || 0);
+  const total  = data.reduce((sum,s) => sum + costo(s), 0);
+
+  // Chips
+  const totalsEl = document.getElementById('svc-gr-totals');
+  if (totalsEl) totalsEl.innerHTML = [
+    ['Total período', formatCurrency(total)],
+    ['Registros', data.length],
+    ['Promedio x service', data.length ? formatCurrency(total/data.length) : '$0'],
+  ].map(([lbl,val]) => `
+    <div style="background:var(--bg-secondary);border-radius:8px;padding:8px 14px;border:1px solid var(--border-color);">
+      <div style="font-size:10px;color:var(--text-secondary);font-weight:600;text-transform:uppercase;letter-spacing:.4px;">${lbl}</div>
+      <div style="font-size:1.2rem;font-weight:800;">${val}</div>
+    </div>`).join('');
+
+  // Mes keys y labels compartidos
+  const mesSet = new Set();
+  data.forEach(s => { const m = (s.fecha||'').substring(0,7); if(m) mesSet.add(m); });
+  const mesKeys   = [...mesSet].sort();
+  const mesLabels = mesKeys.map(m => { const [y,mo] = m.split('-'); return `${mo}/${y.slice(2)}`; });
+
+  // Vehículos
+  const vehList = [...new Set(data.map(s=>s.patente).filter(Boolean))].sort();
+
+  // Agregación por vehículo × mes
+  const byVehMes = {};
+  vehList.forEach(p => { byVehMes[p] = {}; });
+  data.forEach(s => {
+    if (!s.patente) return;
+    const m = (s.fecha||'').substring(0,7); if (!m) return;
+    byVehMes[s.patente][m] = (byVehMes[s.patente][m]||0) + costo(s);
+  });
+
+  // ── 1. Barras agrupadas por vehículo ──
+  const evolCvs = document.getElementById('svc-chart-evol');
+  if (_svcGrChartEvol) { _svcGrChartEvol.destroy(); _svcGrChartEvol = null; }
+  if (evolCvs && mesKeys.length) {
+    const datasets = vehList.length
+      ? vehList.map((pat, i) => ({
+          label: pat,
+          data: mesKeys.map(m => byVehMes[pat]?.[m] || 0),
+          backgroundColor: _CHART_PALETTE[i%_CHART_PALETTE.length].top,
+          borderColor: _CHART_PALETTE[i%_CHART_PALETTE.length].bot,
+          borderWidth: 0, borderRadius: 6, borderSkipped: false,
+        }))
+      : [{ label:'Total', data: mesKeys.map(m => {
+            let t=0; data.forEach(s=>{ if((s.fecha||'').substring(0,7)===m) t+=costo(s); }); return t;
+          }), backgroundColor: _CHART_PALETTE[0].top, borderRadius:8, borderSkipped:false }];
+    _svcGrChartEvol = new Chart(evolCvs, {
+      type: 'bar',
+      data: { labels: mesLabels, datasets },
+      options: {
+        responsive:true, maintainAspectRatio:false,
+        animation:{ duration:900, easing:'easeInOutQuart' },
+        interaction:{ mode:'index', intersect:false },
+        plugins: {
+          legend:{ position:'bottom', labels:{ font:{size:10,weight:'600'}, usePointStyle:true, boxWidth:10 } },
+          datalabels: {
+            display: showLbl,
+            clip: false, clamp: false,
+            font: { size: 9, weight: '700' },
+            formatter: v => v > 0 ? fmtK(v) : '',
+            anchor: ctx => {
+              const bar = ctx.chart.getDatasetMeta(ctx.datasetIndex).data[ctx.dataIndex];
+              return bar && (bar.base - bar.y) > 28 ? 'center' : 'end';
+            },
+            align: ctx => {
+              const bar = ctx.chart.getDatasetMeta(ctx.datasetIndex).data[ctx.dataIndex];
+              return bar && (bar.base - bar.y) > 28 ? 'center' : 'top';
+            },
+            color: ctx => {
+              const bar = ctx.chart.getDatasetMeta(ctx.datasetIndex).data[ctx.dataIndex];
+              return bar && (bar.base - bar.y) > 28 ? '#fff' : (ctx.dataset.backgroundColor || '#888');
+            },
+          },
+          tooltip:{ ..._chartTooltip(), callbacks:{ label: ctx=>`  ${ctx.dataset.label}: ${formatCurrency(ctx.parsed.y)}` } }
+        },
+        scales: {
+          x:{ grid:{ display:false }, ticks:{ display:showX, font:{size:10} } },
+          y:{ grid:_chartGrid(), ticks:{ display:showY, font:{size:10}, callback: v=>fmtK(v) } }
+        }
+      },
+      plugins: _makeChartPlugins(false, null)
+    });
+  }
+
+  // ── 2. Líneas por vehículo ──
+  const lineCvs = document.getElementById('svc-chart-line');
+  if (_svcGrChartLine) { _svcGrChartLine.destroy(); _svcGrChartLine = null; }
+  if (lineCvs && mesKeys.length) {
+    const lineDs = vehList.length
+      ? vehList.map((pat, i) => ({
+          label: pat,
+          data: mesKeys.map(m => byVehMes[pat]?.[m] || 0),
+          borderColor: _CHART_PALETTE[i%_CHART_PALETTE.length].top,
+          backgroundColor: _CHART_PALETTE[i%_CHART_PALETTE.length].top + '18',
+          borderWidth: 2.5, pointRadius: 4, pointHoverRadius: 7,
+          tension: 0.35, fill: false,
+        }))
+      : [{ label:'Total', data: mesKeys.map(m => {
+            let t=0; data.forEach(s=>{ if((s.fecha||'').substring(0,7)===m) t+=costo(s); }); return t;
+          }), borderColor: _CHART_PALETTE[0].top, backgroundColor: _CHART_PALETTE[0].top+'18',
+          borderWidth:2.5, pointRadius:4, pointHoverRadius:7, tension:0.35, fill:true }];
+    _svcGrChartLine = new Chart(lineCvs, {
+      type: 'line',
+      data: { labels: mesLabels, datasets: lineDs },
+      options: {
+        responsive:true, maintainAspectRatio:false,
+        animation:{ duration:900, easing:'easeInOutQuart' },
+        interaction:{ mode:'index', intersect:false },
+        plugins: {
+          legend:{ position:'bottom', labels:{ font:{size:10,weight:'600'}, usePointStyle:true, boxWidth:10 } },
+          datalabels:{ display: showLbl, anchor:'end', align:'top', clip:false, clamp:true, font:{size:9,weight:'700'}, formatter: v => v > 0 ? fmtK(v) : '' },
+          tooltip:{ ..._chartTooltip(), callbacks:{ label: ctx=>`  ${ctx.dataset.label}: ${formatCurrency(ctx.parsed.y)}` } }
+        },
+        scales: {
+          x:{ grid:{ display:false }, ticks:{ display:showX, font:{size:10} } },
+          y:{ grid:_chartGrid(), ticks:{ display:showY, font:{size:10}, callback: v=>fmtK(v) } }
+        }
+      }
+    });
+  }
+
+  // ── 3. Por vehículo (doughnut) ──
+  const byVeh = {};
+  data.forEach(s => { if (s.patente) byVeh[s.patente] = (byVeh[s.patente]||0) + costo(s); });
+  const vehKeys = Object.keys(byVeh).sort((a,b) => byVeh[b]-byVeh[a]);
+  const vehCvs = document.getElementById('svc-chart-veh');
+  if (_svcGrChartVeh) { _svcGrChartVeh.destroy(); _svcGrChartVeh = null; }
+  if (vehCvs && vehKeys.length) {
+    _svcGrChartVeh = new Chart(vehCvs, {
+      type: 'doughnut',
+      data: { labels: vehKeys, datasets: [{ data: vehKeys.map(k => byVeh[k]),
+        backgroundColor: vehKeys.map((_,i) => _CHART_PALETTE[i%_CHART_PALETTE.length].top),
+        borderColor:     vehKeys.map((_,i) => _CHART_PALETTE[i%_CHART_PALETTE.length].bot),
+        borderWidth: 2, hoverOffset: 18 }] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        animation: { duration: 900, easing: 'easeInOutQuart' },
+        plugins: {
+          legend: { position: 'right', labels: { font: {size:10,weight:'600'}, boxWidth:10, usePointStyle:true } },
+          datalabels: dFmt,
+          tooltip: { ..._chartTooltip(), callbacks: { label: ctx => `  ${ctx.label}: ${formatCurrency(ctx.parsed)}` } }
+        }
+      }
+    });
+  }
+
+  // ── 4. Por proveedor (doughnut) ──
+  const byProv = {};
+  data.forEach(s => { const k = s.proveedor||'Sin proveedor'; byProv[k]=(byProv[k]||0)+costo(s); });
+  const provKeys = Object.keys(byProv).sort((a,b)=>byProv[b]-byProv[a]).slice(0,8);
+  const provCvs = document.getElementById('svc-chart-prov');
+  if (_svcGrChartProv) { _svcGrChartProv.destroy(); _svcGrChartProv = null; }
+  if (provCvs && provKeys.length) {
+    _svcGrChartProv = new Chart(provCvs, {
+      type: 'doughnut',
+      data: { labels: provKeys, datasets: [{ data: provKeys.map(k=>byProv[k]),
+        backgroundColor: provKeys.map((_,i)=>_CHART_PALETTE[i%_CHART_PALETTE.length].top),
+        borderColor:     provKeys.map((_,i)=>_CHART_PALETTE[i%_CHART_PALETTE.length].bot),
+        borderWidth:2, hoverOffset:18 }] },
+      options: {
+        responsive:true, maintainAspectRatio:false,
+        animation:{ duration:900, easing:'easeInOutQuart' },
+        plugins: {
+          legend:{ position:'right', labels:{ font:{size:10,weight:'600'}, boxWidth:10, usePointStyle:true } },
+          datalabels: dFmt,
+          tooltip:{ ..._chartTooltip(), callbacks:{ label: ctx=>`  ${ctx.label}: ${formatCurrency(ctx.parsed)}` } }
+        }
+      }
+    });
+  }
+
+  // ── 5. Por tipo de service (doughnut) ──
+  const byTipo = {};
+  data.forEach(s => { const k = s.tipo||'Sin tipo'; byTipo[k]=(byTipo[k]||0)+costo(s); });
+  const tipoKeys = Object.keys(byTipo).sort((a,b)=>byTipo[b]-byTipo[a]);
+  const tipoCvs = document.getElementById('svc-chart-tipo');
+  if (_svcGrChartTipo) { _svcGrChartTipo.destroy(); _svcGrChartTipo = null; }
+  if (tipoCvs && tipoKeys.length) {
+    _svcGrChartTipo = new Chart(tipoCvs, {
+      type: 'doughnut',
+      data: { labels: tipoKeys, datasets: [{ data: tipoKeys.map(k=>byTipo[k]),
+        backgroundColor: tipoKeys.map((_,i)=>_CHART_PALETTE[(i+2)%_CHART_PALETTE.length].top),
+        borderColor:     tipoKeys.map((_,i)=>_CHART_PALETTE[(i+2)%_CHART_PALETTE.length].bot),
+        borderWidth:2, hoverOffset:18 }] },
+      options: {
+        responsive:true, maintainAspectRatio:false,
+        animation:{ duration:900, easing:'easeInOutQuart' },
+        plugins: {
+          legend:{ position:'right', labels:{ font:{size:10,weight:'600'}, boxWidth:10, usePointStyle:true } },
+          datalabels: dFmt,
+          tooltip:{ ..._chartTooltip(), callbacks:{ label: ctx=>`  ${ctx.label}: ${formatCurrency(ctx.parsed)}` } }
+        }
+      }
+    });
+  }
 }
 
 function clearServicesFilters() {
@@ -3493,7 +3853,8 @@ async function openAddServiceModal() {
   _initSvcFacturaDropzone();
   _dzSvcFactura?.clear();
   document.getElementById('svc-factura-url').value = '';
-  _svcPagos = []; renderSvcPagos();
+  _svcPagos = []; renderSvcPagos(); _svcPagosUpdateSummary();
+  _initDiag(null);
   switchModalTab(document.querySelector('#modal-service .modal-tab-btn'), 'svc-tab-datos');
   openModal('modal-service');
 }
@@ -3547,6 +3908,11 @@ async function editService(id) {
 
   // Cargar pagos existentes
   await _loadSvcPagos(s.id);
+
+  // Diagnóstico YPF
+  let diagData = null;
+  try { diagData = typeof s.diagnostico_json === 'string' ? JSON.parse(s.diagnostico_json) : s.diagnostico_json; } catch(_) {}
+  _initDiag(diagData);
 
   switchModalTab(document.querySelector('#modal-service .modal-tab-btn'), 'svc-tab-datos');
   openModal('modal-service');
@@ -3637,6 +4003,186 @@ function calcProximoService() {
   }
 }
 
+// ── Diagnóstico YPF ────────────────────────────────────────────────────────────
+const _DIAG_SECCIONES = {
+  seguridad: {
+    containerId: 'diag-sec-seguridad',
+    items: [
+      { key: 'luces', label: 'Luces exteriores y baúl' },
+      { key: 'tuercas', label: 'Tuercas neumáticos' },
+      { key: 'escobillas', label: 'Escobillas limpiaparabrisas' },
+      { key: 'prof_ti', label: 'Prof. neumático TI (mm)', mm: true },
+      { key: 'prof_td', label: 'Prof. neumático TD (mm)', mm: true },
+      { key: 'prof_di', label: 'Prof. neumático DI (mm)', mm: true },
+      { key: 'prof_dd', label: 'Prof. neumático DD (mm)', mm: true },
+      { key: 'pastillas', label: 'Pastillas de freno' },
+      { key: 'flexibles', label: 'Flexibles de frenos' },
+      { key: 'discos', label: 'Discos de frenos' },
+      { key: 'amortiguadores', label: 'Amortiguadores' },
+      { key: 'pres_traseros', label: 'Presión neumáticos traseros (PSI)', mm: true },
+      { key: 'pres_delanteros', label: 'Presión neumáticos delanteros (PSI)', mm: true },
+    ]
+  },
+  fluidos: {
+    containerId: 'diag-sec-fluidos',
+    items: [
+      { key: 'bateria', label: 'Batería' },
+      { key: 'dir_hidraulica', label: 'Líquido dirección hidráulica' },
+      { key: 'limpiaparabrisas', label: 'Líquido limpiaparabrisas' },
+      { key: 'anticongelante_pto', label: 'Punto congelamiento anticongelante' },
+      { key: 'refrigerante', label: 'Líquido refrigerante/anticongelante' },
+      { key: 'liq_frenos', label: 'Líquido de frenos' },
+    ]
+  },
+  lubricantes: {
+    containerId: 'diag-sec-lubricantes',
+    items: [
+      { key: 'filtro_combustible', label: 'Filtro de combustible' },
+      { key: 'aceite_diferencial', label: 'Aceite diferencial' },
+      { key: 'aceite_transferencia', label: 'Aceite caja de transferencia' },
+      { key: 'aceite_cambios', label: 'Aceite caja de cambios' },
+      { key: 'filtro_aire', label: 'Filtro de aire' },
+      { key: 'cambio_aceite_filtro', label: 'Cambio de aceite y filtro' },
+    ]
+  },
+  mecanica: {
+    containerId: 'diag-sec-mecanica',
+    items: [
+      { key: 'arandela_carter', label: 'Arandela tapón de carter' },
+      { key: 'bisagras', label: 'Bisagras de puertas' },
+      { key: 'escape', label: 'Caño de escape' },
+      { key: 'correa_alternador', label: 'Correa alternador' },
+      { key: 'correa_ac', label: 'Correa aire acondicionado' },
+      { key: 'correa_direccion', label: 'Correa dirección asistida' },
+      { key: 'guardapolvos', label: 'Guardapolvos y transmisión' },
+      { key: 'mangueras', label: 'Revisión de mangueras' },
+    ]
+  },
+  dinamica: {
+    containerId: 'diag-sec-dinamica',
+    items: [
+      { key: 'cinturones', label: 'Cinturones de seguridad' },
+    ]
+  },
+  escaneo: {
+    containerId: 'diag-sec-escaneo',
+    items: [
+      { key: 'abs', label: 'ABS' },
+      { key: 'airbag', label: 'Airbag' },
+      { key: 'climatizacion', label: 'Climatización' },
+      { key: 'historial_fallas', label: 'Historial de fallas' },
+      { key: 'instrumental', label: 'Instrumental' },
+      { key: 'inyeccion', label: 'Inyección' },
+      { key: 'reseteo', label: 'Reseteo service' },
+      { key: 'sensores', label: 'Sensores y actuadores' },
+      { key: 'sonda_lambda', label: 'Sonda lambda' },
+    ]
+  },
+};
+
+let _diagProductos = [];
+
+function _renderDiagSecciones(data) {
+  Object.entries(_DIAG_SECCIONES).forEach(([, sec]) => {
+    const container = document.getElementById(sec.containerId);
+    if (!container) return;
+    container.innerHTML = '';
+    sec.items.forEach(item => {
+      const val = data?.[item.key] || {};
+      const estado = val.estado || '';
+      const mmVal  = val.mm || '';
+      const div = document.createElement('div');
+      div.className = 'diag-item';
+      div.dataset.key = item.key;
+      let mmHtml = '';
+      if (item.mm) {
+        mmHtml = `<div class="diag-item-mm"><input type="number" min="0" step="0.1" value="${mmVal}" placeholder="0" style="width:44px;" data-mm="${item.key}"></div>`;
+      }
+      div.innerHTML = `
+        <span class="diag-item-label" title="${item.label}">${item.label}</span>
+        ${mmHtml}
+        <div class="diag-estado-btns">
+          ${['BIEN','REG','MAL','N/A'].map(s => {
+            const key = s === 'N/A' ? 'NA' : s === 'REG' ? 'REGULAR' : s;
+            const active = estado === key ? ` active-${key}` : '';
+            return `<button type="button" class="diag-estado-btn${active}" data-item="${item.key}" data-estado="${key}">${s}</button>`;
+          }).join('')}
+        </div>`;
+      container.appendChild(div);
+    });
+  });
+
+  // Event delegation on the tab
+  document.getElementById('svc-tab-diag').querySelectorAll('.diag-estado-btn').forEach(btn => {
+    btn.onclick = function() {
+      const key = this.dataset.item;
+      const estado = this.dataset.estado;
+      // toggle buttons in this item
+      this.closest('.diag-estado-btns').querySelectorAll('.diag-estado-btn').forEach(b => {
+        b.className = 'diag-estado-btn' + (b.dataset.estado === estado && b.dataset.item === key ? ` active-${estado}` : '');
+      });
+    };
+  });
+}
+
+function _renderDiagProductos() {
+  const tbody = document.getElementById('diag-productos-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  _diagProductos.forEach((p, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input type="text" value="${p.nombre||''}" oninput="_diagProductos[${i}].nombre=this.value" placeholder="Nombre del producto"></td>
+      <td><input type="text" value="${p.nro_partida||''}" oninput="_diagProductos[${i}].nro_partida=this.value" placeholder="Nro."></td>
+      <td><input type="number" min="0" step="1" value="${p.cantidad||1}" oninput="_diagProductos[${i}].cantidad=this.value" style="width:60px;"></td>
+      <td><button type="button" class="btn-icon-sm" onclick="_diagRemoveProducto(${i})"><i class="fa-solid fa-xmark"></i></button></td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function addDiagProducto() {
+  _diagProductos.push({ nombre: '', nro_partida: '', cantidad: 1 });
+  _renderDiagProductos();
+}
+
+function _diagRemoveProducto(i) {
+  _diagProductos.splice(i, 1);
+  _renderDiagProductos();
+}
+
+function _initDiag(data) {
+  const d = data || {};
+  document.getElementById('diag-taller').value        = d.taller || '';
+  document.getElementById('diag-tecnico').value       = d.tecnico || '';
+  document.getElementById('diag-tipo-tecnico').value  = d.tipo_tecnico || '';
+  document.getElementById('diag-fecha-prox').value    = d.fecha_prox || '';
+  document.getElementById('diag-observaciones').value = d.observaciones || '';
+  _diagProductos = d.productos ? JSON.parse(JSON.stringify(d.productos)) : [];
+  _renderDiagSecciones(d.items || {});
+  _renderDiagProductos();
+}
+
+function _getDiagnosticoData() {
+  const items = {};
+  document.getElementById('svc-tab-diag').querySelectorAll('.diag-item').forEach(div => {
+    const key = div.dataset.key;
+    const activeBtn = div.querySelector('.diag-estado-btn[class*="active-"]');
+    const mmInput = div.querySelector('[data-mm]');
+    const entry = {};
+    if (activeBtn) entry.estado = activeBtn.dataset.estado;
+    if (mmInput && mmInput.value) entry.mm = mmInput.value;
+    if (Object.keys(entry).length) items[key] = entry;
+  });
+  const productos = _diagProductos.filter(p => p.nombre || p.nro_partida);
+  const obs = document.getElementById('diag-observaciones').value || '';
+  const taller = document.getElementById('diag-taller').value || '';
+  const tecnico = document.getElementById('diag-tecnico').value || '';
+  const tipo_tecnico = document.getElementById('diag-tipo-tecnico').value || '';
+  const fecha_prox = document.getElementById('diag-fecha-prox').value || '';
+  if (!taller && !tecnico && !obs && !productos.length && !Object.keys(items).length) return null;
+  return { taller, tecnico, tipo_tecnico, fecha_prox, observaciones: obs, productos, items };
+}
+
 async function saveService(e) {
   e.preventDefault();
   const id = document.getElementById('svc-id').value;
@@ -3670,6 +4216,7 @@ async function saveService(e) {
     factura_items:    document.getElementById('svc-fact-items')?.value    || null,
     factura_receptor: document.getElementById('svc-fact-receptor')?.value || null,
     factura_url: document.getElementById('svc-factura-url')?.value || null,
+    diagnostico_json: _getDiagnosticoData(),
   };
 
   try {
@@ -3927,7 +4474,7 @@ function _fvAutoPosition() {
     const oh    = rect.height;
     const sw    = window.innerWidth;
     const sh    = window.innerHeight;
-    const fvTop = Math.max(8, rect.top);
+    const fvTop = Math.max(70, rect.top);
 
     openerCard.dataset.naturalLeft = rect.left;
 
@@ -3954,17 +4501,24 @@ function _fvAutoPosition() {
     const sw = window.innerWidth;
     const sh = window.innerHeight;
     fv.style.left      = Math.max(8, (sw - fvW) / 2) + 'px';
-    fv.style.top       = '60px';
+    fv.style.top       = '70px';
     fv.style.transform = 'none';
-    fv.style.height    = Math.min(sh - 80, 640) + 'px';
-    fv.style.maxHeight = Math.min(sh - 80, 640) + 'px';
+    fv.style.height    = Math.min(sh - 90, 640) + 'px';
+    fv.style.maxHeight = Math.min(sh - 90, 640) + 'px';
   } else {
     // Sin opener card
+    const isPdfMode = document.getElementById('fv-pdf-frame')?.style.display === 'block';
     fv.style.left      = '50%';
-    fv.style.top       = '60px';
+    fv.style.top       = '70px';
     fv.style.transform = 'translateX(-50%)';
-    fv.style.height    = '';
-    fv.style.maxHeight = '';
+    if (isPdfMode) {
+      const sh = window.innerHeight;
+      fv.style.height    = Math.min(sh - 90, 920) + 'px';
+      fv.style.maxHeight = Math.min(sh - 90, 920) + 'px';
+    } else {
+      fv.style.height    = '';
+      fv.style.maxHeight = '';
+    }
   }
 
   // Re-ajustar zoom de la imagen después de redimensionar
@@ -4112,7 +4666,7 @@ function openDocViewer(url, title = '', forcePdf = false) {
   if (isPdf) {
     img.style.display   = 'none';
     img.src             = '';
-    const pdfUrl = url.includes('#') ? url : url + '#zoom=page-fit&toolbar=1';
+    const pdfUrl = url.includes('#') ? url : url + '#zoom=page-width&toolbar=1&page=1';
     if (frame) { frame.src = pdfUrl; frame.style.display = 'block'; }
     // PDF: solo botón IA/Texto, ocultar todo lo demás (zoom, rotar, perspectiva)
     zoomBtns.forEach(b => { if (b.id !== 'fv-wa-btn' && b.id !== 'fv-persp-btn') b.style.display = 'none'; });
@@ -4131,9 +4685,10 @@ function openDocViewer(url, title = '', forcePdf = false) {
     const ta = document.getElementById('fv-text-area');
     if (tp) tp.style.display = 'none';
     if (ta) { ta.value = ''; ta.setAttribute('readonly', ''); }
-    // Resetear ancho y setear altura cómoda para PDF
-    fv.style.width  = _FV_BASE_W + 'px';
-    fv.style.height = Math.min(window.innerHeight - 80, 860) + 'px';
+    // PDF: ancho amplio para que una hoja A4 sea legible
+    const pdfW = Math.min(Math.round(window.innerWidth * 0.72), 1100);
+    fv.style.width  = pdfW + 'px';
+    fv.style.height = Math.min(window.innerHeight - 60, 920) + 'px';
     // Activar modo ACOPLADO
     _fvLinked = true;
     _fvInjectLinkBtn();
@@ -5621,18 +6176,74 @@ async function loadCondicionesFiscalesSelect(selectId, selectedId = null) {
 }
 
 // Simple toast notification
-function showToast(msg) {
+// ── Anime.js utilities ────────────────────────────────────────────────────────
+
+// Contador animado: anima el número dentro de `el` desde 0 hasta `targetVal`
+// fmtFn: función de formato (ej: formatCurrency, v => v + ' registros')
+function animateCounter(el, targetVal, fmtFn) {
+  if (!window.anime || !el) return;
+  const num = parseFloat(String(targetVal).replace(/[^0-9.-]/g, '')) || 0;
+  if (num === 0) { el.textContent = fmtFn ? fmtFn(0) : '0'; return; }
+  const obj = { val: 0 };
+  anime({
+    targets: obj,
+    val: num,
+    duration: 900,
+    easing: 'easeOutExpo',
+    update() { el.textContent = fmtFn ? fmtFn(obj.val) : Math.round(obj.val).toLocaleString('es-AR'); }
+  });
+}
+
+// Stagger de filas de tabla al cargar — llama después de poblar el tbody
+function staggerTableRows(tbodyOrId) {
+  if (!window.anime) return;
+  const tbody = typeof tbodyOrId === 'string' ? document.getElementById(tbodyOrId) : tbodyOrId;
+  if (!tbody) return;
+  const rows = [...tbody.querySelectorAll('tr')];
+  if (!rows.length) return;
+  rows.forEach(r => { r.style.opacity = '0'; r.style.transform = 'translateY(8px)'; });
+  anime({
+    targets: rows,
+    opacity: [0, 1],
+    translateY: [8, 0],
+    duration: 280,
+    delay: anime.stagger(28, { start: 30 }),
+    easing: 'easeOutQuad'
+  });
+}
+
+// Shake en un elemento (error)
+function shakeEl(el) {
+  if (!window.anime || !el) return;
+  anime({ targets: el, translateX: [0, -8, 8, -6, 6, -3, 3, 0], duration: 420, easing: 'easeInOutSine' });
+}
+
+// Pulse/bounce en un elemento (éxito)
+function pulseEl(el) {
+  if (!window.anime || !el) return;
+  anime({ targets: el, scale: [1, 1.06, 0.97, 1], duration: 380, easing: 'easeInOutBack' });
+}
+
+function showToast(msg, type) {
   let t = document.getElementById('_toast');
   if (!t) {
     t = document.createElement('div');
     t.id = '_toast';
-    t.style.cssText = 'position:fixed;bottom:30px;right:30px;background:var(--accent-color);color:#fff;padding:10px 20px;border-radius:8px;z-index:99999;font-size:14px;box-shadow:0 4px 12px rgba(0,0,0,0.3);transition:opacity 0.4s;';
+    t.style.cssText = 'position:fixed;bottom:30px;right:30px;color:#fff;padding:10px 20px;border-radius:8px;z-index:99999;font-size:14px;box-shadow:0 4px 12px rgba(0,0,0,0.3);';
     document.body.appendChild(t);
   }
+  const bg = type === 'error' ? '#dc2626' : type === 'warning' ? '#d97706' : type === 'success' ? '#16a34a' : 'var(--accent-color)';
+  t.style.background = bg;
   t.textContent = msg;
   t.style.opacity = '1';
   clearTimeout(t._timer);
   t._timer = setTimeout(() => { t.style.opacity = '0'; }, 2500);
+  // feedback animado
+  if (window.anime) {
+    if (type === 'error')   shakeEl(t);
+    else if (type === 'success') pulseEl(t);
+    else anime({ targets: t, translateY: [20, 0], opacity: [0, 1], duration: 320, easing: 'easeOutBack' });
+  }
 }
 
 // ============================================================
@@ -5646,6 +6257,7 @@ function clearMultasFilters() {
   _clearSelect('multas-filter-vehiculo');
   _clearSelect('multas-filter-chofer');
   _clearSelect('multas-filter-estado');
+  _clearSelect('multas-filter-municipalidad');
   const d = document.getElementById('multas-filter-desde'); if (d) d.value = '';
   const h = document.getElementById('multas-filter-hasta'); if (h) h.value = '';
   loadMultas();
@@ -5653,24 +6265,30 @@ function clearMultasFilters() {
 
 async function loadMultas() {
   try {
-    const chofer   = document.getElementById('multas-filter-chofer')?.value || '';
-    const vehiculo = document.getElementById('multas-filter-vehiculo')?.value || '';
-    const estado   = document.getElementById('multas-filter-estado')?.value || '';
-    const desde    = document.getElementById('multas-filter-desde')?.value || '';
-    const hasta    = document.getElementById('multas-filter-hasta')?.value || '';
+    const chofer        = document.getElementById('multas-filter-chofer')?.value || '';
+    const vehiculo      = document.getElementById('multas-filter-vehiculo')?.value || '';
+    const estado        = document.getElementById('multas-filter-estado')?.value || '';
+    const desde         = document.getElementById('multas-filter-desde')?.value || '';
+    const hasta         = document.getElementById('multas-filter-hasta')?.value || '';
+    const municipalidad = document.getElementById('multas-filter-municipalidad')?.value || '';
     const params = new URLSearchParams();
-    if (chofer)   params.set('chofer_id',   chofer);
-    if (vehiculo) params.set('vehiculo_id', vehiculo);
-    if (estado)   params.set('estado',      estado);
-    if (desde)    params.set('desde',       desde);
-    if (hasta)    params.set('hasta',       hasta);
+    if (chofer)        params.set('chofer_id',        chofer);
+    if (vehiculo)      params.set('vehiculo_id',      vehiculo);
+    if (estado)        params.set('estado',           estado);
+    if (desde)         params.set('desde',            desde);
+    if (hasta)         params.set('hasta',            hasta);
+    if (municipalidad) params.set('municipalidad_id', municipalidad);
     const res = await fetch('/api/multas?' + params.toString());
     _cachedMultas = await res.json();
     const badge = document.getElementById('multas-total-badge');
     if (badge) {
       const total = _cachedMultas.reduce((s, m) => s + parseFloat(m.monto || 0), 0);
-      badge.textContent = _cachedMultas.length ? `Total: ${formatCurrency(total)}` : '';
+      badge.textContent = _cachedMultas.length ? formatCurrency(total) : '';
     }
+    const multasCountBadge = document.getElementById('multas-count-badge');
+    if (multasCountBadge) multasCountBadge.textContent = _cachedMultas.length ? `${_cachedMultas.length} multa${_cachedMultas.length !== 1 ? 's' : ''}` : '';
+    const multasRow = document.getElementById('multas-totals-row');
+    if (multasRow) multasRow.style.display = _cachedMultas.length ? '' : 'none';
     const tbody = document.getElementById('multas-table-body');
     tbody.innerHTML = '';
     _cachedMultas.forEach((m, idx) => {
@@ -5723,7 +6341,23 @@ async function loadMultas() {
     });
     _populateMultasVehiculoFilter(_cachedMultas);
     _populateMultasChoferFilter(_cachedMultas);
+    _populateMultasMunicipalidadFilter(_cachedMultas);
+    staggerTableRows(tbody);
     bindHeaderEvents();
+    window._exportFiltersMap = window._exportFiltersMap || {};
+    window._exportFiltersMap['table-multas'] = () => {
+      const _gv = id => { const el = document.getElementById(id); return el?.value?.trim() || ''; };
+      const _gt = id => { const el = document.getElementById(id); const sel = el?.selectedIndex; return sel > 0 ? el.options[sel].text.trim() : ''; };
+      const parts = [
+        _gt('multas-filter-vehiculo'),
+        _gt('multas-filter-chofer'),
+        _gt('multas-filter-municipalidad'),
+        _gt('multas-filter-estado'),
+        _gv('multas-filter-desde'),
+        _gv('multas-filter-hasta'),
+      ].filter(Boolean).map(s => s.replace(/[^\w\dÁÉÍÓÚáéíóúÑñ\-]/g, '_').replace(/_+/g,'_').replace(/^_|_$/g,''));
+      return parts.join('_');
+    };
     injectExportBar('table-multas', 'Infracciones');
   } catch (err) { console.error('Error al cargar multas:', err); }
 }
@@ -5745,6 +6379,23 @@ function _populateMultasChoferFilter(list) {
     sel.appendChild(opt);
   });
   SmartCombo.refresh(sel);
+}
+
+function _populateMultasMunicipalidadFilter(list) {
+  const sel = document.getElementById('multas-filter-municipalidad');
+  if (!sel) return;
+  const current = sel.value;
+  const munis = [...new Map(
+    list.filter(r => r.municipalidad_id && r.municipalidad_nombre)
+        .map(r => [r.municipalidad_id, r.municipalidad_nombre])
+  ).entries()].sort((a,b) => a[1].localeCompare(b[1]));
+  [...sel.options].forEach(o => { if (o.value !== '') o.remove(); });
+  munis.forEach(([id, nombre]) => {
+    const opt = document.createElement('option');
+    opt.value = id; opt.textContent = nombre;
+    if (String(id) === current) opt.selected = true;
+    sel.appendChild(opt);
+  });
 }
 
 function _populateMultasVehiculoFilter(list) {
@@ -5782,6 +6433,45 @@ function _resetMultaOcrDropzone() {
   _dzMultaOcr?.clear();
 }
 
+function _onMultaMedioPagoChange(medio, cuentaId = '', tarjetaId = '', cuotas = 1) {
+  const area = document.getElementById('multa-pago-extra');
+  if (!area) return;
+  const needsCuenta  = ['Transferencia','MercadoPago','Uala'].includes(medio);
+  const needsTarjeta = medio === 'Tarjeta';
+  if (!needsCuenta && !needsTarjeta) { area.style.display = 'none'; area.innerHTML = ''; return; }
+
+  if (needsCuenta) {
+    const opts = (_cachedCuentas || []).map(c => {
+      const titular = [c.nombre, c.apellido].filter(Boolean).join(' ');
+      const banco   = c.banco_nombre ? ` · ${c.banco_emoji || ''}${c.banco_nombre}` : '';
+      return `<option value="${c.id}" ${c.id == cuentaId ? 'selected' : ''}>${c.alias}${titular ? ' — ' + titular : ''}${banco}</option>`;
+    }).join('');
+    area.innerHTML = `<div class="form-group">
+      <label for="multa-cuenta-pago">Cuenta utilizada</label>
+      <select id="multa-cuenta-pago">
+        <option value="">-- Sin especificar --</option>${opts}
+      </select>
+    </div>`;
+  } else {
+    const tarjOpts = (_cachedTarjetas || []).map(t =>
+      `<option value="${t.id}" ${t.id == tarjetaId ? 'selected' : ''}>${_tarjetaMarcaLabel(t)} ${t.ultimos_4 ? '••'+t.ultimos_4 : ''}${t.banco_nombre ? ' · '+t.banco_nombre : ''}</option>`
+    ).join('');
+    area.innerHTML = `<div style="display:grid;grid-template-columns:1fr 100px;gap:12px;">
+      <div class="form-group">
+        <label for="multa-tarjeta-pago">Tarjeta utilizada</label>
+        <select id="multa-tarjeta-pago">
+          <option value="">-- Seleccionar tarjeta --</option>${tarjOpts}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="multa-cuotas-pago">Cuotas</label>
+        <input type="number" id="multa-cuotas-pago" min="1" max="48" value="${cuotas || 1}" style="text-align:center;">
+      </div>
+    </div>`;
+  }
+  area.style.display = 'block';
+}
+
 function _toggleMultaPagoArea(multaId) {
   const noId = document.getElementById('multa-pago-no-id');
   const area  = document.getElementById('multa-pago-dropzone-area');
@@ -5790,12 +6480,13 @@ function _toggleMultaPagoArea(multaId) {
     noId.style.display = 'none'; area.style.display = 'block';
     if (!_dzMultaPago) {
       _dzMultaPago = new DropZone({
-        mountId: 'multa-pago-dz-mount',
-        id:      'multa-pago-dz',
-        label:   'Comprobante de pago',
-        icon:    'fa-receipt',
-        task:    'foto',
-        camera:  false,
+        mountId:        'multa-pago-dz-mount',
+        id:             'multa-pago-dz',
+        label:          'Comprobante de pago',
+        icon:           'fa-receipt',
+        task:           'foto',
+        camera:         false,
+        uploadEndpoint: '/api/upload/multa-foto',
       });
     }
   } else {
@@ -5879,11 +6570,13 @@ async function editMulta(id) {
   document.getElementById('multa-numero-acta').value = m.numero_acta || '';
   document.getElementById('multa-fecha').value = m.fecha_infraccion ? m.fecha_infraccion.split('T')[0] : '';
   document.getElementById('multa-hora').value = m.hora_infraccion ? m.hora_infraccion.substring(0,5) : '';
-  document.getElementById('multa-vencimiento').value = m.fecha_vencimiento ? m.fecha_vencimiento.split('T')[0] : '';
+  document.getElementById('multa-vto-voluntario').value = (m.fecha_vto_voluntario || m.fecha_vencimiento || '').split('T')[0] || '';
+  document.getElementById('multa-vto-total').value = m.fecha_vto_total ? m.fecha_vto_total.split('T')[0] : '';
   document.getElementById('multa-descripcion').value = m.descripcion;
   document.getElementById('multa-articulo').value = m.articulo_infringido || '';
   document.getElementById('multa-lugar').value = m.lugar || '';
-  setAmt('multa-monto', m.monto || 0);
+  setAmt('multa-monto-voluntario', m.monto_voluntario ?? m.monto ?? 0);
+  setAmt('multa-monto-total', m.monto_total || 0);
   document.getElementById('multa-puntos').value = m.puntos || '';
   document.getElementById('multa-estado').value = m.estado || 'pendiente';
   document.getElementById('multa-url-consulta').value = m.url_consulta || '';
@@ -5902,6 +6595,7 @@ async function editMulta(id) {
   document.getElementById('multa-fecha-pago').value = m.fecha_pago ? m.fecha_pago.split('T')[0] : '';
   document.getElementById('multa-medio-pago').value = m.medio_pago_multa || '';
   document.getElementById('multa-nro-operacion-pago').value = m.nro_operacion_pago || '';
+  _onMultaMedioPagoChange(m.medio_pago_multa || '', m.cuenta_id_pago || '', m.tarjeta_id_pago || '', m.cuotas_pago || 1);
   _toggleMultaPagoArea(m.id);
   _showMultaPagoPreview(m.comprobante_pago_url || '');
   const urlLink = document.getElementById('multa-url-link');
@@ -5957,11 +6651,15 @@ async function saveMulta(e) {
     numero_acta: document.getElementById('multa-numero-acta').value || null,
     fecha_infraccion: document.getElementById('multa-fecha').value || null,
     hora_infraccion: document.getElementById('multa-hora').value || null,
-    fecha_vencimiento: document.getElementById('multa-vencimiento').value || null,
+    fecha_vencimiento:     document.getElementById('multa-vto-voluntario').value || null,
+    fecha_vto_voluntario:  document.getElementById('multa-vto-voluntario').value || null,
+    fecha_vto_total:       document.getElementById('multa-vto-total').value || null,
     descripcion: document.getElementById('multa-descripcion').value,
     articulo_infringido: document.getElementById('multa-articulo').value || null,
     lugar: document.getElementById('multa-lugar').value || null,
-    monto: getAmt('multa-monto') || null,
+    monto:            getAmt('multa-monto-voluntario') || null,
+    monto_voluntario: getAmt('multa-monto-voluntario') || null,
+    monto_total:      getAmt('multa-monto-total') || null,
     puntos: document.getElementById('multa-puntos').value || null,
     estado: document.getElementById('multa-estado').value,
     url_consulta: urlVal || null,
@@ -5976,7 +6674,19 @@ async function saveMulta(e) {
     fecha_pago: document.getElementById('multa-fecha-pago').value || null,
     medio_pago_multa: document.getElementById('multa-medio-pago').value || null,
     nro_operacion_pago: document.getElementById('multa-nro-operacion-pago').value || null,
+    cuenta_id_pago: document.getElementById('multa-cuenta-pago')?.value || null,
+    tarjeta_id_pago: document.getElementById('multa-tarjeta-pago')?.value || null,
+    cuotas_pago: document.getElementById('multa-cuotas-pago')?.value || null,
   };
+
+  // Auto-estado pagada cuando se registra un pago
+  if (data.fecha_pago && !['anulada','impugnada'].includes(data.estado)) {
+    data.estado = 'pagada';
+    const estadoSel = document.getElementById('multa-estado');
+    if (estadoSel?._ssSet) estadoSel._ssSet('pagada');
+    else if (estadoSel) estadoSel.value = 'pagada';
+  }
+
   try {
     const res = await fetch(isEdit ? `/api/multas/${id}` : '/api/multas', {
       method: isEdit ? 'PUT' : 'POST',
@@ -6056,11 +6766,55 @@ async function viewMulta(id) {
   setTimeout(patchGallery, 600);
 }
 
+async function verificarPagoMP() {
+  const nro = document.getElementById('multa-nro-operacion-pago')?.value?.trim();
+  const box = document.getElementById('mp-verificacion-result');
+  if (!nro) { showToast('Ingresá el número de operación primero', 'warning'); return; }
+  box.style.display = 'block';
+  box.innerHTML = '<span style="color:var(--text-secondary);font-size:12px;">Consultando Mercado Pago…</span>';
+  try {
+    const res = await fetch(`/api/mp/payment/${nro}`);
+    const d = await res.json();
+    if (!res.ok) {
+      box.innerHTML = `<div style="padding:8px 12px;background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;font-size:12px;color:#b91c1c;">✗ ${d.message}</div>`;
+      return;
+    }
+    const statusColor = { approved:'#16a34a', pending:'#c96a00', rejected:'#b91c1c', cancelled:'#6b7280' }[d.status] || '#6b7280';
+    const statusLabel = { approved:'✓ Aprobado', pending:'⏳ Pendiente', rejected:'✗ Rechazado', cancelled:'Cancelado' }[d.status] || d.status;
+    const fecha = d.fecha ? new Date(d.fecha).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}) : '—';
+    const monto = d.monto != null ? `$ ${Number(d.monto).toLocaleString('es-AR',{minimumFractionDigits:2})}` : '—';
+    box.innerHTML = `
+      <div style="padding:10px 14px;background:var(--bg-tertiary);border:1px solid var(--border-color);border-left:4px solid ${statusColor};border-radius:6px;font-size:12px;display:flex;flex-direction:column;gap:4px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-weight:700;color:${statusColor};">${statusLabel}</span>
+          <span style="font-weight:700;">${monto}</span>
+        </div>
+        ${d.fecha ? `<div style="color:var(--text-secondary);">${fecha}</div>` : ''}
+        ${d.pagador_email ? `<div style="color:var(--text-secondary);">Pagador: ${d.pagador_nombre || ''} &lt;${d.pagador_email}&gt;</div>` : ''}
+        ${d.medio ? `<div style="color:var(--text-secondary);">Medio: ${d.medio} (${d.tipo})</div>` : ''}
+      </div>`;
+    // Si está aprobado, auto-setear fecha de pago si está vacía
+    if (d.status === 'approved' && d.fecha) {
+      const fpEl = document.getElementById('multa-fecha-pago');
+      if (fpEl && !fpEl.value) fpEl.value = d.fecha.split('T')[0];
+      const medioEl = document.getElementById('multa-medio-pago');
+      if (medioEl && !medioEl.value && d.medio?.toLowerCase().includes('mercado')) {
+        if (medioEl._ssSet) medioEl._ssSet('MercadoPago'); else medioEl.value = 'MercadoPago';
+      }
+    }
+  } catch (e) {
+    box.innerHTML = `<div style="padding:8px 12px;background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;font-size:12px;color:#b91c1c;">✗ Error: ${e.message}</div>`;
+  }
+}
+
 async function enviarMultaWA(id) {
   const m = _cachedMultas.find(x => x.id === id);
   if (!m) return;
-  const fecha  = m.fecha_infraccion ? formatDate(m.fecha_infraccion) : '-';
-  const monto  = m.monto ? formatCurrency(m.monto) : '-';
+  const fecha        = m.fecha_infraccion ? formatDate(m.fecha_infraccion) : '-';
+  const montoVol     = m.monto_voluntario ? formatCurrency(m.monto_voluntario) : (m.monto ? formatCurrency(m.monto) : '-');
+  const montoTotal   = m.monto_total ? formatCurrency(m.monto_total) : '-';
+  const vtoVol       = m.fecha_vto_voluntario || m.fecha_vencimiento;
+  const vtoTotal     = m.fecha_vto_total;
   const estado = m.estado || '-';
   const acta   = m.numero_acta || '-';
   const muni   = m.municipalidad_nombre || '-';
@@ -6071,13 +6825,12 @@ async function enviarMultaWA(id) {
     `🚗 Vehículo: ${m.patente}`,
     `👤 Chofer: ${chofer}`,
     `📅 Fecha: ${fecha}${m.hora_infraccion ? ' ' + m.hora_infraccion.substring(0,5) + ' h' : ''}`,
-    m.fecha_vencimiento ? `⏰ Vencimiento: ${formatDate(m.fecha_vencimiento)}` : '',
     `🏛 Municipalidad: ${muni}`,
-    `💰 Monto: ${monto}`,
+    `💰 Pago voluntario: ${montoVol}${vtoVol ? ' (vto. ' + formatDate(vtoVol) + ')' : ''}`,
+    montoTotal !== '-' ? `💸 Pago total (al vencer): ${montoTotal}${vtoTotal ? ' (vto. ' + formatDate(vtoTotal) + ')' : ''}` : '',
     `📌 Estado: ${estado}`,
     m.lugar ? `📍 ${m.lugar}` : '',
     m.descripcion ? `📝 ${m.descripcion}` : '',
-    m.comprobante_pago_url ? `🧾 Comprobante: ${window.location.origin}${m.comprobante_pago_url}` : '',
   ].filter(Boolean).join('\n');
   const label = `Infracción ${acta} — ${m.patente}`;
   await openWhatsAppModal(null, label, m.chofer_id ? { tipo: 'chofer', id: m.chofer_id } : null);
@@ -6132,12 +6885,13 @@ function openMultasGraficos() {
     y += barH + 8;
   });
 
+  document.getElementById('modal-multas-graficos')?.remove();
   const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
+  overlay.className = 'modal-overlay active';
   overlay.id = 'modal-multas-graficos';
   overlay.style.cssText = 'display:flex;z-index:1100;';
-  overlay.innerHTML = `<div class="modal-container" style="max-width:600px;width:95%;max-height:90vh;overflow-y:auto;">
-    <div class="modal-header"><h2>Gráficos — Infracciones</h2><button class="btn-close" onclick="this.closest('.modal-overlay').remove()">&times;</button></div>
+  overlay.innerHTML = `<div class="modal-card" style="max-width:600px;width:95%;max-height:90vh;overflow-y:auto;">
+    <div class="modal-header"><h2>Gráficos — Infracciones</h2><button class="btn-close" onclick="document.getElementById('modal-multas-graficos').remove()">&times;</button></div>
     <div class="modal-body" style="padding:16px;">
       <svg viewBox="0 0 500 ${y+20}" xmlns="http://www.w3.org/2000/svg" style="width:100%;font-family:inherit">${svgBars}</svg>
     </div>
@@ -6169,12 +6923,16 @@ async function autoAsignarChoferMulta(multaId) {
       municipalidad_id: multa.municipalidad_id || null,
       fecha_infraccion: multa.fecha_infraccion ? multa.fecha_infraccion.split('T')[0] : null,
       hora_infraccion: multa.hora_infraccion ? multa.hora_infraccion.substring(0,5) : null,
-      fecha_vencimiento: multa.fecha_vencimiento ? multa.fecha_vencimiento.split('T')[0] : null,
+      fecha_vencimiento:    multa.fecha_vencimiento ? multa.fecha_vencimiento.split('T')[0] : null,
+      fecha_vto_voluntario: multa.fecha_vto_voluntario ? multa.fecha_vto_voluntario.split('T')[0] : null,
+      fecha_vto_total:      multa.fecha_vto_total ? multa.fecha_vto_total.split('T')[0] : null,
       numero_acta: multa.numero_acta || null,
       descripcion: multa.descripcion,
       articulo_infringido: multa.articulo_infringido || null,
       lugar: multa.lugar || null,
-      monto: multa.monto || null,
+      monto:            multa.monto_voluntario ?? multa.monto ?? null,
+      monto_voluntario: multa.monto_voluntario || null,
+      monto_total:      multa.monto_total || null,
       puntos: multa.puntos || null,
       estado: multa.estado || 'pendiente',
       url_consulta: multa.url_consulta || null,
@@ -6304,7 +7062,7 @@ async function _loadMultaWAHist(m) {
     const hist = await fetch('/api/whatsapp/historial?' + params).then(r => r.json()).catch(() => []);
     if (!hist.length) { el.textContent = 'Sin notificaciones enviadas.'; return; }
     el.innerHTML = hist.map(h => {
-      const fecha = h.fecha ? new Date(h.fecha).toLocaleString('es-AR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' }) : '';
+      const fecha = h.fecha ? new Date(h.fecha).toLocaleString('es-AR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit', hour12:false }) : '';
       return `<div style="padding:5px 0;border-bottom:1px solid var(--border-color);display:flex;gap:8px;align-items:flex-start;">
         <i class="fa-brands fa-whatsapp" style="color:#25d366;margin-top:2px;flex-shrink:0;"></i>
         <span><strong>${fecha}</strong> — ${h.descripcion || ''}<br><span style="font-size:11px;color:var(--text-secondary);">${h.usuario_nombre || ''}</span></span>
@@ -6828,18 +7586,15 @@ async function abrirModalVerificacion(municipalidadId) {
   _verifJobId      = null;
   _verifResultado  = null;
 
-  // Resetear UI
   document.getElementById('verif-muni-nombre').textContent = muni.nombre;
-  document.getElementById('verif-step-1').style.display = 'block';
-  document.getElementById('verif-step-2').style.display = 'none';
-  document.getElementById('verif-step-3').style.display = 'none';
-  document.getElementById('verif-log').innerHTML = '';
-  document.getElementById('verif-btn-extraer').style.display = 'none';
 
-  // Mostrar botón Bot WA solo para CABA
+  // Panel derecho oculto, izquierdo visible
+  _verifCerrarPanel();
+
+  // Bot WA solo para CABA
   const esCABA = (muni.url_consulta || '').includes('buenosaires.gob.ar');
   const btnWaBot = document.getElementById('verif-btn-wa-bot');
-  if (btnWaBot) btnWaBot.style.display = esCABA ? 'inline-flex' : 'none';
+  if (btnWaBot) btnWaBot.style.display = esCABA ? 'flex' : 'none';
 
   // Cargar vehículos
   const vSel = document.getElementById('verif-vehiculo');
@@ -6853,25 +7608,115 @@ async function abrirModalVerificacion(municipalidadId) {
       o.textContent = `${v.patente} — ${(v.marca||'')} ${(v.modelo||'')}`.trim();
       vSel.appendChild(o);
     });
+    SmartCombo.refresh(vSel);
   } catch {}
 
   openModal('modal-verificacion');
 }
 
-async function iniciarVerificacion() {
+function _verifCerrarPanel() {
+  const right = document.getElementById('verif-panel-right');
+  if (right) right.style.display = 'none';
+  const s2 = document.getElementById('verif-step-2');
+  const s3 = document.getElementById('verif-step-3');
+  if (s2) s2.style.display = 'none';
+  if (s3) s3.style.display = 'none';
+  const pb = document.getElementById('verif-patente-box');
+  if (pb) pb.style.display = 'none';
+  const log = document.getElementById('verif-log');
+  if (log) log.innerHTML = '';
+  const extraer = document.getElementById('verif-btn-extraer');
+  if (extraer) extraer.style.display = 'none';
+}
+
+function _verifCerrarNavegador() {
+  // Cierra el navegador/job pero NO cierra el modal ni el panel izquierdo
+  if (_verifJobId) {
+    fetch(`/api/verificacion/${_verifJobId}`, { method: 'DELETE' }).catch(() => {});
+    _verifJobId = null;
+  }
+  if (_verifSseSource) { _verifSseSource.close(); _verifSseSource = null; }
+  _registrarVerifLog('cancelado', 0);
+  _verifCerrarPanel();
+}
+
+async function _verifOnVehiculoChange(vehiculoId) {
+  const infoBox   = document.getElementById('verif-ultima-info');
+  const histBox   = document.getElementById('verif-historial');
+  const histList  = document.getElementById('verif-historial-list');
+  if (!vehiculoId || !_verifMuniId) { if (infoBox) infoBox.style.display = 'none'; if (histBox) histBox.style.display = 'none'; return; }
+  try {
+    const [ultimo, historial] = await Promise.all([
+      fetch(`/api/verificacion/log/ultimo/${vehiculoId}/${_verifMuniId}`).then(r => r.json()),
+      fetch(`/api/verificacion/log/${vehiculoId}/${_verifMuniId}`).then(r => r.json()),
+    ]);
+    if (ultimo) {
+      const fecha = new Date(ultimo.fecha).toLocaleString('es-AR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit', hour12:false });
+      const colores = { sin_multas:'var(--color-success)', con_multas:'var(--color-error)', error:'var(--color-warning)', cancelado:'var(--text-secondary)' };
+      const labels  = { sin_multas:'Sin multas', con_multas:`${ultimo.multas_encontradas} multa(s) encontrada(s)`, error:'Error', cancelado:'Cancelado' };
+      document.getElementById('verif-ultima-fecha').textContent = fecha;
+      document.getElementById('verif-ultima-resultado').innerHTML = `<span style="color:${colores[ultimo.resultado]||''};font-weight:600;">${labels[ultimo.resultado]||ultimo.resultado}</span>${ultimo.usuario ? ` · ${ultimo.usuario}` : ''}`;
+      infoBox.style.display = 'block';
+    } else {
+      infoBox.style.display = 'none';
+    }
+    if (historial?.length > 1) {
+      histList.innerHTML = historial.slice(0,8).map(h => {
+        const f = new Date(h.fecha).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
+        const col = { sin_multas:'var(--color-success)', con_multas:'var(--color-error)', error:'#c96a00', cancelado:'var(--text-secondary)' }[h.resultado] || '';
+        const ico = { sin_multas:'✓', con_multas:'⚠', error:'✗', cancelado:'–' }[h.resultado] || '·';
+        return `<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-color);">
+          <span style="color:${col};font-weight:700;">${ico}</span>
+          <span style="flex:1;color:var(--text-secondary);">${f}</span>
+          <span style="color:${col};">${h.multas_encontradas ? h.multas_encontradas+'m' : ''}</span>
+        </div>`;
+      }).join('');
+      histBox.style.display = 'block';
+    } else {
+      histBox.style.display = 'none';
+    }
+  } catch (_) { if (infoBox) infoBox.style.display = 'none'; }
+}
+
+async function _registrarVerifLog(resultado, multasEncontradas = 0, multasImportadas = 0) {
+  const vehiculoId = document.getElementById('verif-vehiculo')?.value;
+  if (!vehiculoId || !_verifMuniId) return;
+  await fetch('/api/verificacion/log', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ vehiculo_id: vehiculoId, municipalidad_id: _verifMuniId, resultado, multas_encontradas: multasEncontradas, multas_importadas: multasImportadas })
+  }).catch(() => {});
+  // Refrescar info en panel izquierdo
+  _verifOnVehiculoChange(vehiculoId);
+}
+
+async function iniciarVerificacion(modo = 'manual') {
   const vehiculoId = document.getElementById('verif-vehiculo').value;
   if (!vehiculoId) { showAlert('Seleccioná un vehículo'); return; }
 
-  // Pasar a paso 2
-  document.getElementById('verif-step-1').style.display = 'none';
-  document.getElementById('verif-step-2').style.display = 'block';
-  _verifLog('⏳ Iniciando proceso...', 'info');
+  // Mostrar panel derecho con step-2
+  const right = document.getElementById('verif-panel-right');
+  if (right) { right.style.display = 'flex'; }
+  document.getElementById('verif-step-2').style.display = 'flex';
+  document.getElementById('verif-step-3').style.display = 'none';
+
+  // Resetear botón Extraer por si quedó de una sesión anterior
+  const _btnEx = document.getElementById('verif-btn-extraer');
+  if (_btnEx) {
+    _btnEx.style.display = 'none';
+    _btnEx.disabled = false;
+    _btnEx.innerHTML = '<i class="fa-solid fa-download"></i> Extraer resultados de la página';
+  }
+  const _hint = document.getElementById('verif-hint');
+  if (_hint) _hint.textContent = '';
+
+  _verifLog(modo === 'auto' ? '🤖 Iniciando con Obscura (headless)...' : '🌐 Iniciando navegador...', 'info');
 
   try {
     const res = await fetch('/api/verificacion/iniciar', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ municipalidad_id: _verifMuniId, vehiculo_id: vehiculoId })
+      body: JSON.stringify({ municipalidad_id: _verifMuniId, vehiculo_id: vehiculoId, modo })
     });
     if (!res.ok) { const e = await res.json(); _verifLog('✗ Error: ' + e.message, 'error'); return; }
     const data = await res.json();
@@ -7047,12 +7892,15 @@ async function extraerResultadosVerificacion() {
   }
 }
 
-function _mostrarResultadosVerificacion(result) {
+async function _mostrarResultadosVerificacion(result) {
   if (!result) return;
   _verifResultado = result;
 
+  // Mostrar panel derecho con step-3
+  const right = document.getElementById('verif-panel-right');
+  if (right) right.style.display = 'flex';
   document.getElementById('verif-step-2').style.display = 'none';
-  document.getElementById('verif-step-3').style.display = 'block';
+  document.getElementById('verif-step-3').style.display = 'flex';
 
   const msgEl = document.getElementById('verif-resultado-msg');
   const cont   = document.getElementById('verif-multas-container');
@@ -7063,6 +7911,7 @@ function _mostrarResultadosVerificacion(result) {
       <p style="margin-top:10px;font-size:13px;color:var(--text-secondary);">El sitio puede requerir que completes el formulario manualmente o hubo un error al consultar.</p>`;
     cont.style.display = 'none';
     btnImp.style.display = 'none';
+    _registrarVerifLog('error', 0);
     return;
   }
 
@@ -7070,15 +7919,34 @@ function _mostrarResultadosVerificacion(result) {
     msgEl.innerHTML = `<div class="badge badge-success" style="font-size:13px;padding:8px 12px;">✓ No hay infracciones registradas para esta patente</div>`;
     cont.style.display = 'none';
     btnImp.style.display = 'none';
+    _registrarVerifLog('sin_multas', 0);
     return;
   }
 
+  // Verificar cuáles actas ya están registradas en el sistema
+  const todasActas = result.multas.map(m => m.numero_acta).filter(Boolean);
+  const existingActas = new Set();
+  if (todasActas.length) {
+    try {
+      const params = new URLSearchParams();
+      todasActas.forEach(a => params.append('acta', a));
+      const r = await fetch('/api/multas/check-actas?' + params);
+      if (r.ok) { const d = await r.json(); d.forEach(a => existingActas.add(a)); }
+    } catch {}
+  }
+
+  const nuevas = result.multas.filter(m => !existingActas.has(m.numero_acta)).length;
   const n = result.multas.length;
-  msgEl.innerHTML = `<div class="badge badge-warning" style="font-size:13px;padding:8px 12px;"><i class="fa-solid fa-triangle-exclamation"></i> ${n} infracción(es) encontrada(s) — revisalas y seleccioná las que querés importar</div>`;
+  _registrarVerifLog('con_multas', n);
+  msgEl.innerHTML = `<div class="badge badge-warning" style="font-size:13px;padding:8px 12px;">
+    <i class="fa-solid fa-triangle-exclamation"></i> ${n} infracción(es) encontrada(s)
+    ${existingActas.size ? ` — <span style="color:#86efac;">${existingActas.size} ya registrada${existingActas.size!==1?'s':''}</span>, <strong>${nuevas} nueva${nuevas!==1?'s':''} para importar</strong>` : ' — revisalas y seleccioná las que querés importar'}
+  </div>`;
 
   const tbody = document.getElementById('verif-multas-tbody');
   tbody.innerHTML = '';
   result.multas.forEach((m, i) => {
+    const yaRegistrada = existingActas.has(m.numero_acta);
     const estadoBadge = { pagada: 'badge-success', vencida: 'badge-danger', pendiente: 'badge-warning' }[m.estado?.toLowerCase()] || 'badge-warning';
     const pruebaCount = m.prueba_urls?.length || 0;
     const pruebaDataAttr = encodeURIComponent(JSON.stringify(m.prueba_urls || []));
@@ -7097,9 +7965,10 @@ function _mostrarResultadosVerificacion(result) {
          value="${fechaVal}" style="width:155px;font-size:12px;"
          title="Fecha y hora de infracción">`;
     const tr = document.createElement('tr');
+    if (yaRegistrada) tr.style.cssText = 'opacity:.45;';
     tr.innerHTML = `
-      <td style="text-align:center;"><input type="checkbox" class="verif-multa-chk" value="${i}" checked></td>
-      <td style="font-weight:600;">${m.numero_acta||'-'}</td>
+      <td style="text-align:center;"><input type="checkbox" class="verif-multa-chk" value="${i}" ${yaRegistrada ? '' : 'checked'}></td>
+      <td style="font-weight:600;">${m.numero_acta||'-'}${yaRegistrada ? ' <span title="Ya registrada en el sistema" style="font-size:10px;color:#22c55e;font-weight:400;">✓ ya registrada</span>' : ''}</td>
       <td>${fechaCell}</td>
       <td style="max-width:200px;">${m.descripcion||'-'}<br>
         <small style="color:var(--text-secondary);">${m.articulo_infringido||''}</small><br>
@@ -7120,7 +7989,7 @@ function _mostrarResultadosVerificacion(result) {
 
   cont.style.display = 'block';
   btnImp.style.display = 'inline-flex';
-  document.getElementById('verif-check-all').checked = true;
+  document.getElementById('verif-check-all').checked = nuevas > 0;
 }
 
 function toggleAllVerifMultas(checked) {
@@ -7136,6 +8005,7 @@ function _verifSetFecha(idx, value) {
 // ── Visor de pruebas de multas (grid fotos + video + DropZones) ───────────────
 let _pruebaManualUrls = []; // URLs de imágenes pegadas/arrastradas manualmente
 let _pruebaMultaIdx   = -1; // índice de la multa en _verifResultado.multas actualmente abierta
+let _pruebaCurrentUrls = []; // copia mutable de las URLs del visor abierto (fotos ya existentes)
 
 // Extrae timestamp YYYYMMDDHHMMSS del nombre de archivo para ordenar cronológicamente
 function _pruebaExtractTs(url) {
@@ -7148,6 +8018,7 @@ function openPruebasViewer(urlsJson, label, multaIdx) {
   try { urls = JSON.parse(urlsJson); } catch {}
   _pruebaManualUrls = [];
   _pruebaMultaIdx   = multaIdx ?? -1;
+  _pruebaCurrentUrls = [...urls];
 
   const isVid = u => /\.(mp4|webm|ogg|mov|avi|mkv)(\?|$)/i.test(u) || /video/i.test(u);
   // Ordenar fotos por timestamp en filename (más antigua primero = secuencia de la infracción)
@@ -7216,14 +8087,58 @@ function openPruebasViewer(urlsJson, label, multaIdx) {
 
 function _pruebaThumbHtml(url, i) {
   const safe = url.replace(/'/g,"&#39;");
-  return `<div onclick="_pruebaZoom('${safe}')"
-    style="cursor:zoom-in;border-radius:6px;overflow:hidden;background:#1a1a2e;
+  return `<div style="position:relative;border-radius:6px;overflow:hidden;background:#1a1a2e;
            aspect-ratio:4/3;display:flex;align-items:center;justify-content:center;
            border:2px solid var(--border-color);">
     <img src="${safe}" alt="Foto ${i+1}"
-      style="width:100%;height:100%;object-fit:cover;"
+      style="width:100%;height:100%;object-fit:cover;cursor:zoom-in;"
+      onclick="_pruebaZoom('${safe}')"
       onerror="this.parentElement.innerHTML='<div style=\'display:flex;flex-direction:column;align-items:center;gap:6px;color:#555;padding:16px;\'><i class=\'fa-solid fa-image-slash\' style=\'font-size:1.8rem;\'></i><span style=\'font-size:11px;\'>No disponible</span></div>'">
+    <button type="button" onclick="event.stopPropagation();_pruebaDeleteImg(${i})"
+      title="Eliminar imagen"
+      style="position:absolute;top:5px;right:5px;width:24px;height:24px;border-radius:50%;
+             border:none;background:rgba(0,0,0,.7);color:#fff;font-size:13px;line-height:1;
+             cursor:pointer;display:flex;align-items:center;justify-content:center;
+             transition:background .15s;z-index:2;"
+      onmouseover="this.style.background='#dc2626'" onmouseout="this.style.background='rgba(0,0,0,.7)'">
+      <i class="fa-solid fa-xmark"></i>
+    </button>
   </div>`;
+}
+
+function _pruebaDeleteImg(idx) {
+  showConfirm('¿Eliminar esta imagen?').then(ok => {
+    if (!ok) return;
+    // Quitar del array en memoria
+    _pruebaCurrentUrls.splice(idx, 1);
+    // Si la multa existe en el resultado, sincronizar
+    if (_pruebaMultaIdx >= 0 && _verifResultado?.multas?.[_pruebaMultaIdx]) {
+      _verifResultado.multas[_pruebaMultaIdx].prueba_urls = [..._pruebaCurrentUrls];
+      // Actualizar badge
+      const total = _pruebaCurrentUrls.length;
+      const btn = document.getElementById(`prueba-btn-${_pruebaMultaIdx}`);
+      if (btn) {
+        const badge = btn.querySelector('.badge');
+        if (badge) {
+          badge.className = `badge ${total > 0 ? 'badge-info' : 'badge-secondary'}`;
+          badge.innerHTML = `<i class="fa-solid fa-camera"></i> ${total} Prueba${total!==1?'s':''}`;
+        }
+        const newData = encodeURIComponent(JSON.stringify(_pruebaCurrentUrls));
+        const lbl = btn.getAttribute('onclick')?.match(/decodeURIComponent\('([^']+)'\),\s*\d/)?.[1] || '';
+        btn.setAttribute('onclick', `openPruebasViewer(decodeURIComponent('${newData}'),decodeURIComponent('${lbl}'),${_pruebaMultaIdx})`);
+      }
+    }
+    // Re-renderizar el grid
+    const grid = document.getElementById('pruebas-grid');
+    if (!grid) return;
+    const isVid = u => /\.(mp4|webm|ogg|mov|avi|mkv)(\?|$)/i.test(u) || /video/i.test(u);
+    const fotos = _pruebaCurrentUrls.filter(u => !isVid(u))
+                    .sort((a,b) => _pruebaExtractTs(a).localeCompare(_pruebaExtractTs(b)));
+    // Preservar slots de dropzone existentes
+    const slots = grid.querySelectorAll('.prueba-dz-slot');
+    grid.innerHTML = fotos.map((u, i) => _pruebaThumbHtml(u, i)).join('');
+    slots.forEach(s => grid.appendChild(s));
+  });
 }
 
 let _pruebaDzCount = 0; // total de slots creados
@@ -7475,8 +8390,8 @@ function _closePruebasViewer() {
   if (_pruebaMultaIdx >= 0 && _verifResultado?.multas?.[_pruebaMultaIdx]) {
     const manuals = Object.values(_pruebaManualUrls).filter(Boolean);
     if (manuals.length) {
-      const existing = _verifResultado.multas[_pruebaMultaIdx].prueba_urls || [];
-      _verifResultado.multas[_pruebaMultaIdx].prueba_urls = [...existing, ...manuals];
+      // Usar _pruebaCurrentUrls (ya refleja eliminaciones) como base
+      _verifResultado.multas[_pruebaMultaIdx].prueba_urls = [..._pruebaCurrentUrls, ...manuals];
       // Actualizar badge
       const total = _verifResultado.multas[_pruebaMultaIdx].prueba_urls.length;
       const btn = document.getElementById(`prueba-btn-${_pruebaMultaIdx}`);
@@ -7619,8 +8534,9 @@ async function importarMultasVerificadas() {
       }
     }
 
+    await _registrarVerifLog('con_multas', _verifResultado.multas.length, data.importadas);
     showToast(`✓ ${data.importadas} infracción(es) importada(s)`);
-    closeModal('modal-verificacion');
+    _verifCerrarPanel();
     loadMultas();
   } catch(err) {
     showAlert('Error al importar: ' + err.message);
@@ -7630,15 +8546,17 @@ async function importarMultasVerificadas() {
 }
 
 async function cancelarVerificacion() {
-  if (_verifResultado?.multas?.length) {
-    const ok = await showConfirm('¿Cerrar la verificación? Se perderán los resultados del scraper y las imágenes cargadas.');
+  if (_verifJobId || _verifResultado?.multas?.length) {
+    const ok = await showConfirm('¿Cerrar la verificación? Se perderán los resultados cargados.');
     if (!ok) return;
   }
   if (_verifSseSource) { _verifSseSource.close(); _verifSseSource = null; }
   if (_verifJobId) {
-    fetch(`/api/verificacion/${_verifJobId}`, { method: 'DELETE' }).catch(()=>{});
+    fetch(`/api/verificacion/${_verifJobId}`, { method: 'DELETE' }).catch(() => {});
     _verifJobId = null;
   }
+  _verifResultado = null;
+  _verifCerrarPanel();
   closeModal('modal-verificacion');
 }
 
@@ -8197,10 +9115,20 @@ function openPagoModal(id = null, readOnly = false) {
     const nowLocal = new Date(Date.now() - new Date().getTimezoneOffset()*60000).toISOString().substring(0,16);
     document.getElementById('pg-fecha').value = nowLocal;
     document.getElementById('modal-pago-title').textContent = 'Cargar Pago o Reintegro';
+    // Limpiar monto y su campo oculto (form.reset() no borra dataset.raw)
+    const montoEl = document.getElementById('pg-monto');
+    if (montoEl) { montoEl.value = ''; montoEl.dataset.raw = ''; }
+    const montoRaw = document.getElementById('pg-monto-raw');
+    if (montoRaw) montoRaw.value = '';
+    const difHint = document.getElementById('pg-monto-dif-hint');
+    if (difHint) difHint.style.display = 'none';
+    // Limpiar conceptos de imputación
     ['pg-rend-alquiler','pg-rend-peajes','pg-rend-deuda','pg-rend-productos','pg-rend-otro'].forEach(eid => {
       const el = document.getElementById(eid);
       if (el) { el.value = ''; el.dataset.raw = ''; }
     });
+    const difConc = document.getElementById('pg-rend-diferencia');
+    if (difConc) { difConc.textContent = '$ 0'; difConc.style.color = 'var(--color-success)'; }
     onPagoTipoChange();
   }
   openModal('modal-pago');
@@ -8235,7 +9163,9 @@ async function _loadPagoEnModal(id, readOnly = false) {
       el.selectedIndex = 0;
     };
 
-    setVal('pg-tipo', p.tipo || 'ingreso');
+    // Transferencias siempre son ingreso
+    const tipoVal = (p.medio_pago === 'Transferencia' || p.medio_pago === 'MercadoPago') ? 'ingreso' : (p.tipo || 'ingreso');
+    setSelect('pg-tipo', tipoVal);
     onPagoTipoChange();
     setSelect('pg-chofer', p.chofer_id);
     const monto = parseFloat(p.monto || 0);
@@ -8256,6 +9186,11 @@ async function _loadPagoEnModal(id, readOnly = false) {
       const eye  = document.getElementById('pg-comprobante-eye');
       if (prev) { prev.src = p.comprobante_url; prev.style.display = ''; }
       if (eye)  eye.style.display = '';
+      // Sincronizar visor flotante con el comprobante de este cobro
+      const fv = document.getElementById('float-img-viewer');
+      if (fv && fv.style.display !== 'none') {
+        openImgViewer(p.comprobante_url, `Comprobante Cobro #${id}`);
+      }
     }
     calcPagoConceptos();
 
@@ -8264,6 +9199,19 @@ async function _loadPagoEnModal(id, readOnly = false) {
       const el = document.getElementById(eid);
       if (el) { el.value = ''; el.dataset.raw = ''; }
     });
+
+    // Auto-imputar alquiler: si es transferencia y monto == modalidad del chofer
+    if ((p.medio_pago === 'Transferencia' || p.medio_pago === 'MercadoPago') && p.chofer_modalidad) {
+      const modalidadNum = parseFloat(String(p.chofer_modalidad).replace(/[^0-9.]/g,'')) || 0;
+      if (modalidadNum > 0 && Math.abs(monto - modalidadNum) < 0.01) {
+        const alqEl = document.getElementById('pg-rend-alquiler');
+        // Solo auto-imputar si el campo está vacío (no pisar imputación manual previa)
+        if (alqEl && !alqEl.dataset.raw) {
+          alqEl.dataset.raw = String(monto);
+          alqEl.value = monto.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+        }
+      }
+    }
 
     // Cargar conceptos imputados
     try {
@@ -8280,6 +9228,15 @@ async function _loadPagoEnModal(id, readOnly = false) {
           }
         });
         calcPagoConceptos();
+        // Si la DB no tenía conceptos pero el auto-imputar los completó, persitirlos silenciosamente
+        if (conceptos.length === 0) {
+          const cIds   = ['pg-rend-alquiler','pg-rend-peajes','pg-rend-deuda','pg-rend-productos','pg-rend-otro'];
+          const cNames = ['alquiler','peajes','multas','cobranza_productos','otro'];
+          const toSave = cIds.map((eid,i) => ({ concepto: cNames[i], monto: getAmt(eid) })).filter(c => c.monto > 0);
+          if (toSave.length > 0) {
+            fetch(`/api/pagos/${id}/conceptos`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(toSave) }).catch(()=>{});
+          }
+        }
       }
     } catch(_) {}
 
@@ -8583,6 +9540,7 @@ function previewPagoComprobante(file) {
 
 function clearPagoComprobante() {
   _pagoComprobanteFile = null;
+  _pagoTrfData = null;
   const dz   = document.getElementById('pg-comprobante-drop');
   const prev = document.getElementById('pg-comprobante-prev');
   const eye  = document.getElementById('pg-comprobante-eye');
@@ -8591,9 +9549,10 @@ function clearPagoComprobante() {
   if (prev) { prev.src = ''; prev.style.display = 'none'; }
   if (eye)  eye.style.display = 'none';
   if (inp)  try { inp.value = ''; } catch(e) {}
-  const ocrBtn = document.getElementById('pg-btn-ocr');
-  const aiBtn  = document.getElementById('pg-btn-ai');
   dzSetStatus('pg-ocr-status', '');
+  // Ocultar panel de datos extraídos por OCR/IA
+  const trfPanel = document.getElementById('pg-trf-panel');
+  if (trfPanel) trfPanel.style.display = 'none';
 }
 
 // OCR del comprobante de pago — extrae monto, fecha y destinatario
@@ -9405,7 +10364,9 @@ function handleVtvFileSelect(file) {
     if (dz)  dz.classList.add('has-img');
     if (eye) { eye.style.display = ''; eye.onclick = () => { _fvOpenerModal = eye.closest('.modal-overlay')?.id || document.querySelector('.modal-overlay.active')?.id || null; openImgViewer(url, file.name); }; }
   } else {
-    // PDF — mostrar ícono en el dropzone y habilitar visor
+    // PDF — mostrar ícono en el dropzone, deshabilitar OCR (solo imágenes) y auto-ejecutar IA
+    const ocrBtn = document.getElementById('dz-ocr-vtv-dropzone');
+    if (ocrBtn) { ocrBtn.disabled = true; ocrBtn.title = 'OCR solo funciona con imágenes — para PDFs se usa IA automáticamente'; }
     if (img) img.style.display = 'none';
     if (dz) {
       dz.classList.add('has-img');
@@ -9430,6 +10391,13 @@ function handleVtvFileSelect(file) {
         openDocViewer(pdfUrl, file.name, true);
       };
     }
+    // Auto-ejecutar IA al cargar PDF (OCR no funciona con PDFs)
+    if (_aiAvailable) {
+      dzSetStatus('vtv-dropzone', '⏳ Extrayendo datos del PDF…', 'info');
+      setTimeout(() => _runVtvAI(), 300);
+    } else {
+      dzSetStatus('vtv-dropzone', 'PDF listo — presioná IA para extraer datos', 'info');
+    }
   }
 }
 
@@ -9446,6 +10414,8 @@ function clearVtvFile() {
   if (lbl) lbl.textContent = '';
   if (inp) try { inp.value = ''; } catch(e) {}
   dzSetStatus('vtv-ai-status', '');
+  const ocrBtn = document.getElementById('dz-ocr-vtv-dropzone');
+  if (ocrBtn) { ocrBtn.disabled = false; ocrBtn.title = ''; }
 }
 
 async function extractVtvOCR() {
@@ -9906,6 +10876,27 @@ function toggleSearch(viewId) {
     container.style.display = 'none';
   }
 }
+
+function toggleSearch(id) {
+  const btn   = document.getElementById(id + '-search-btn');
+  const input = document.getElementById(id + '-search-input');
+  if (!btn || !input) return;
+  const opening = !btn.classList.contains('active');
+  if (opening) {
+    input.style.display = '';
+    requestAnimationFrame(() => input.classList.add('open'));
+    btn.classList.add('active');
+    setTimeout(() => input.focus(), 50);
+  } else {
+    input.classList.remove('open');
+    btn.classList.remove('active');
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    setTimeout(() => { input.style.display = 'none'; }, 260);
+  }
+}
+
+function toggleChoferesSearch() { toggleSearch('choferes'); }
 
 function handleSearchKeydown(event, viewId) {
   if (event.key === 'Enter') {
@@ -10507,8 +11498,8 @@ async function saveContactosAlternativos(vehiculoId) {
 // ALERTAS DE VENCIMIENTO — módulo consolidado (VTV, Seguro, GNC,
 // Registro de conductor, Service por KM proyectado)
 // ============================================================
-const _ALERTA_TIPO_LABEL = { vtv: 'VTV', seguro: 'Seguro', gnc: 'GNC', registro: 'Registro', service: 'Service' };
-const _ALERTA_TIPO_ICON  = { vtv: 'fa-clipboard-check', seguro: 'fa-shield-halved', gnc: 'fa-gas-pump', registro: 'fa-id-card', service: 'fa-screwdriver-wrench' };
+const _ALERTA_TIPO_LABEL = { vtv: 'VTV', seguro: 'Seguro', gnc: 'GNC', registro: 'Registro', service: 'Service', afip_cert: 'Cert AFIP', multa: 'MULTA' };
+const _ALERTA_TIPO_ICON  = { vtv: 'fa-clipboard-check', seguro: 'fa-shield-halved', gnc: 'fa-gas-pump', registro: 'fa-id-card', service: 'fa-screwdriver-wrench', afip_cert: 'fa-file-certificate', multa: 'fa-triangle-exclamation' };
 
 // Texto + estado visual para una alerta, según días restantes (o falta de dato para Service)
 function _alertaEstado(a) {
@@ -10521,7 +11512,7 @@ function _alertaEstado(a) {
     return { texto: msg, clase: 'ok', color: 'var(--text-secondary)', orden: 3 };
   }
   if (a.dias < 0)  return { texto: `Vencido hace ${Math.abs(a.dias)} día${Math.abs(a.dias)===1?'':'s'}`, clase: 'vencido', color: 'var(--color-error)', orden: 0 };
-  if (a.dias <= 30) return { texto: `Vence en ${a.dias} día${a.dias===1?'':'s'}`, clase: 'proximo', color: 'var(--accent-orange,#ed8936)', orden: 1 };
+  if (a.dias <= 30) return { texto: `Vence en ${a.dias} día${a.dias===1?'':'s'}`, clase: 'proximo', color: '#c96a00', orden: 1 };
   return { texto: `Vence en ${a.dias} días`, clase: 'ok', color: 'var(--color-success)', orden: 2 };
 }
 
@@ -10580,6 +11571,86 @@ function clearAlertasFilters() {
   renderAlertasModulo();
 }
 
+function _alertaWaTexto(a) {
+  const fv = a.fecha_vencimiento ? new Date(a.fecha_vencimiento).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',year:'numeric'}) : null;
+  const label = _ALERTA_TIPO_LABEL[a.tipo] || a.tipo;
+  if (a.tipo === 'registro') return `Hola ${a.chofer_nombre}, te recordamos que tu Registro de Conductor vence el ${fv}. Por favor renovalo a tiempo. Gracias.`;
+  if (a.tipo === 'vtv')     return `Recordatorio: la VTV del vehículo ${a.patente} vence el ${fv}. Coordinar turno.`;
+  if (a.tipo === 'seguro')  return `Recordatorio: el Seguro del vehículo ${a.patente} vence el ${fv}. Coordinar renovación.`;
+  if (a.tipo === 'gnc')     return `Recordatorio: la habilitación GNC del vehículo ${a.patente} vence el ${fv}. Coordinar renovación.`;
+  if (a.tipo === 'multa')   return `Atención: multa del vehículo ${a.patente} — ${a.detalle}. Vence el ${fv}. Proceder al pago.`;
+  return `Recordatorio: ${label} — ${a.detalle}${fv ? ` vence el ${fv}` : ''}.`;
+}
+
+async function _alertaEnviarWA(a) {
+  if (a.tipo === 'multa' && a.multa_id) {
+    if (!_cachedMultas.find(x => x.id === a.multa_id)) {
+      const data = await fetch('/api/multas').then(r => r.json()).catch(() => []);
+      if (Array.isArray(data.data || data)) _cachedMultas = data.data || data;
+    }
+    enviarMultaWA(a.multa_id);
+  } else if (a.wa_numero) {
+    window.open(`https://wa.me/${a.wa_numero}?text=${encodeURIComponent(_alertaWaTexto(a))}`, '_blank');
+  }
+}
+
+async function _alertaVerRegistro(a) {
+  if (a.tipo === 'multa' && a.multa_id) {
+    if (!_cachedMultas.find(x => x.id === a.multa_id)) {
+      const data = await fetch('/api/multas').then(r => r.json()).catch(() => []);
+      if (Array.isArray(data.data || data)) _cachedMultas = data.data || data;
+    }
+    editMulta(a.multa_id);
+  } else if (a.tipo === 'registro' && a.chofer_id) {
+    if (!cachedChoferes.find(x => x.id === a.chofer_id)) {
+      cachedChoferes = await fetch('/api/choferes').then(r => r.json()).catch(() => []);
+    }
+    editChofer(a.chofer_id);
+  } else if (a.vehiculo_id) {
+    if (!cachedVehiculos.find(x => x.id === a.vehiculo_id)) {
+      cachedVehiculos = await fetch('/api/vehiculos').then(r => r.json()).catch(() => []);
+    }
+    editVehiculo(a.vehiculo_id);
+  }
+}
+
+function exportAlertasXLS() {
+  const list = _lastAlertasList || [];
+  if (!list.length) { alert('No hay alertas para exportar.'); return; }
+  const rows = list.map(a => {
+    const est = _alertaEstado(a);
+    const fv = a.fecha_vencimiento ? new Date(a.fecha_vencimiento).toLocaleDateString('es-AR') : '';
+    return {
+      Tipo: _ALERTA_TIPO_LABEL[a.tipo] || a.tipo,
+      Detalle: a.detalle || '',
+      Patente: a.patente || '',
+      Chofer: a.chofer_nombre || '',
+      'Fecha venc.': fv,
+      Estado: est.texto,
+    };
+  });
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Alertas');
+  const now = new Date();
+  const fecha = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+  const hora  = `${String(now.getHours()).padStart(2,'0')}-${String(now.getMinutes()).padStart(2,'0')}`;
+  XLSX.writeFile(wb, `Alertas_${fecha}_${hora}.xlsx`);
+}
+
+function enviarWaMasivoAlertas() {
+  const list = (_lastAlertasList || []).filter(a => a.wa_numero);
+  if (!list.length) { alert('No hay alertas con número de WhatsApp en el filtro actual.'); return; }
+  if (!confirm(`Vas a abrir ${list.length} chat(s) de WhatsApp. ¿Continuar?`)) return;
+  list.forEach((a, i) => {
+    setTimeout(() => {
+      window.open(`https://wa.me/${a.wa_numero}?text=${encodeURIComponent(_alertaWaTexto(a))}`, '_blank');
+    }, i * 600);
+  });
+}
+
+let _lastAlertasList = [];
+
 function renderAlertasModulo() {
   const body = document.getElementById('alertas-modulo-body');
   if (!body) return;
@@ -10602,6 +11673,8 @@ function renderAlertasModulo() {
     });
   }
 
+  _lastAlertasList = list;
+
   if (!list.length) {
     body.innerHTML = '<p style="color:var(--text-secondary);font-size:13px;text-align:center;padding:24px;">Sin alertas para este filtro.</p>';
     return;
@@ -10609,8 +11682,9 @@ function renderAlertasModulo() {
 
   body.innerHTML = `
     <div style="display:flex;flex-direction:column;gap:8px;">
-      ${list.map(a => {
+      ${list.map((a, idx) => {
         const est = _alertaEstado(a);
+        const fv = a.fecha_vencimiento ? new Date(a.fecha_vencimiento).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',year:'numeric'}) : '—';
         return `
         <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:var(--bg-tertiary);border-radius:10px;border-left:4px solid ${est.color};">
           <div style="display:flex;align-items:center;gap:12px;">
@@ -10620,7 +11694,17 @@ function renderAlertasModulo() {
               <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.03em;">${_ALERTA_TIPO_LABEL[a.tipo]||a.tipo}</div>
             </div>
           </div>
-          <span style="font-size:13px;font-weight:700;color:${est.color};white-space:nowrap;margin-left:10px;">${est.texto}</span>
+          <div style="display:flex;align-items:center;gap:8px;margin-left:10px;flex-shrink:0;">
+            <span style="font-size:12px;color:var(--text-secondary);white-space:nowrap;">${fv}</span>
+            <span style="font-size:13px;font-weight:700;color:${est.color};white-space:nowrap;min-width:130px;text-align:right;">${est.texto}</span>
+            <div style="display:flex;gap:4px;">
+              <button onclick="_alertaVerRegistro(_lastAlertasList[${idx}])" class="tbl-action-btn tbl-btn-view" title="Ver registro"><i class="fa-solid fa-eye"></i></button>
+              ${(a.wa_numero || a.tipo === 'multa')
+                ? `<button onclick="_alertaEnviarWA(_lastAlertasList[${idx}])" class="tbl-action-btn" style="background:var(--color-whatsapp,#25d366);color:#fff;" title="Enviar por WhatsApp"><i class="fa-brands fa-whatsapp"></i></button>`
+                : `<button class="tbl-action-btn" disabled style="opacity:.3;cursor:default;" title="Sin número de WhatsApp"><i class="fa-brands fa-whatsapp"></i></button>`
+              }
+            </div>
+          </div>
         </div>
       `;
       }).join('')}
@@ -10673,6 +11757,8 @@ const _CHOFER_FILE_KEYS = {
   'ch-file-dni-dorso':  'dni_dorso',
   'ch-file-reg-frente': 'reg_frente',
   'ch-file-reg-dorso':  'reg_dorso',
+  'ch-file-calif1':     'calif1',
+  'ch-file-calif2':     'calif2',
 };
 
 function previewChoferDoc(input, prevId, dzId, eyeId) {
@@ -10791,7 +11877,7 @@ function clearDzSlot(dzId, inputId, prevId, eyeId, fileKey) {
   // _pendingFiles (vehículo)
   if (fileKey && _pendingFiles[fileKey]) delete _pendingFiles[fileKey];
   // Marcar que este slot fue borrado explícitamente (para persistir __CLEAR__ al guardar)
-  const choferDocKeys = new Set(['dni_frente','dni_dorso','reg_frente','reg_dorso']);
+  const choferDocKeys = new Set(['dni_frente','dni_dorso','reg_frente','reg_dorso','calif1','calif2']);
   if (fileKey && choferDocKeys.has(fileKey)) _clearedChoferSlots.add(fileKey);
 }
 
@@ -11468,16 +12554,20 @@ function setBrightness(val) {
 }
 
 function setThemeMode(mode) {
-  localStorage.setItem('ui_theme', mode);
-  if (mode === 'light') {
-    document.body.classList.add('theme-light');
-    document.getElementById('btn-dark-mode')?.classList.remove('active');
-    document.getElementById('btn-light-mode')?.classList.add('active');
-  } else {
-    document.body.classList.remove('theme-light');
-    document.getElementById('btn-dark-mode')?.classList.add('active');
-    document.getElementById('btn-light-mode')?.classList.remove('active');
-  }
+  const apply = () => {
+    localStorage.setItem('ui_theme', mode);
+    if (mode === 'light') {
+      document.body.classList.add('theme-light');
+      document.getElementById('btn-dark-mode')?.classList.remove('active');
+      document.getElementById('btn-light-mode')?.classList.add('active');
+    } else {
+      document.body.classList.remove('theme-light');
+      document.getElementById('btn-dark-mode')?.classList.add('active');
+      document.getElementById('btn-light-mode')?.classList.remove('active');
+    }
+  };
+  if (!document.startViewTransition) { apply(); return; }
+  document.startViewTransition(apply);
 }
 
 function setAccentColor(color, el) {
@@ -12371,14 +13461,19 @@ async function loadRendiciones(silent = false) {
       // Botones del medio según estado de factura
       let middleBtns;
       if (r.factura_url) {
-        // Ya tiene factura: mostrar PDF de factura
-        middleBtns = `<button class="tbl-action-btn tbl-btn-factura-pdf" onclick="openDocViewer('${r.factura_url}','Factura #${r.id}',true)" title="Ver factura PDF"><i class="fa-solid fa-file-pdf"></i></button>`;
+        // Ya tiene factura: mostrar PDF de factura + opción de reemplazar
+        middleBtns = `<button class="tbl-action-btn tbl-btn-factura-pdf" onclick="openDocViewer('${r.factura_url}','Factura #${r.id}',true)" title="Ver factura PDF"><i class="fa-solid fa-file-pdf"></i></button>`
+                   + `<button class="tbl-action-btn tbl-btn-clip" onclick="adjuntarFacturaPDF(${r.id})" title="Reemplazar PDF de factura"><i class="fa-solid fa-paperclip"></i></button>`;
       } else if (r.factura_ref === 'pending') {
-        // Factura en proceso
-        middleBtns = `<button class="tbl-action-btn tbl-btn-pending" title="Factura en proceso..."><i class="fa-solid fa-spinner fa-spin"></i></button>`;
+        // Factura en proceso: cancelar + adjuntar manual
+        middleBtns = `<button class="tbl-action-btn tbl-btn-pending" onclick="buscarFacturaWa(${r.id})" title="Buscar último PDF de Facturitas en WhatsApp y vincular"><i class="fa-brands fa-whatsapp fa-beat"></i></button>`
+                   + `<button class="tbl-action-btn tbl-btn-clip" onclick="adjuntarFacturaPDF(${r.id})" title="Adjuntar PDF manualmente"><i class="fa-solid fa-paperclip"></i></button>`
+                   + `<button class="tbl-action-btn tbl-btn-delete" onclick="cancelarFacturaPending(${r.id})" title="Cancelar — Facturitas no respondió"><i class="fa-solid fa-xmark"></i></button>`;
       } else {
-        // Sin factura: hoja roja = iniciar facturación por WA
-        middleBtns = `<button class="tbl-action-btn tbl-btn-detail" onclick="facturarRendicion(${r.id})" title="Facturar via WhatsApp Facturitas"><i class="fa-solid fa-file-lines"></i></button>`;
+        // Sin factura: AFIP directo + WA/Facturitas + clip manual
+        middleBtns = `<button class="tbl-action-btn tbl-btn-afip" onclick="facturarAfip(${r.id})" title="Emitir Factura B directo en AFIP"><i class="fa-solid fa-a"></i></button>`
+                   + `<button class="tbl-action-btn tbl-btn-facturar-pend" onclick="facturarRendicion(${r.id})" title="Pendiente de facturar — enviar via Facturitas"><i class="fa-solid fa-file-circle-plus"></i></button>`
+                   + `<button class="tbl-action-btn tbl-btn-clip" onclick="adjuntarFacturaPDF(${r.id})" title="Adjuntar PDF de factura manualmente"><i class="fa-solid fa-paperclip"></i></button>`;
       }
 
       const rowStyle = r.factura_url ? 'background:rgba(239,68,68,0.06);' : '';
@@ -12387,19 +13482,46 @@ async function loadRendiciones(silent = false) {
         <td>${destino}</td>
         <td>${fecha}</td>
         <td><strong>${formatCurrency(monto)}</strong></td>
-        <td><span class="badge badge-success">Cobranza</span></td>
+        ${(() => {
+            const esTransf = r.medio_pago === 'Transferencia' || r.medio_pago === 'MercadoPago';
+            const sinCuenta = !r.cuenta_id_val;
+            const imputado = parseFloat(r.imputado_total || 0);
+            const monto_total = parseFloat(r.monto_total || 0);
+            const sinImputar = esTransf && monto_total > 0 && imputado < monto_total - 0.01;
+            const needsAttention = sinCuenta || sinImputar;
+            const estadoBadge = needsAttention
+              ? '<span class="badge badge-warning">Pendiente</span>'
+              : '<span class="badge badge-success">Cobranza</span>';
+            return `<td>${estadoBadge}</td>`;
+          })()}
         <td>Op. ${r.nro_transaccion||'—'}</td>
         <td style="text-align:center;">${clipCol}</td>
         <td style="text-align:center;white-space:nowrap;">
           <button class="tbl-action-btn tbl-btn-view" onclick="viewRendicion(${r.id},'${r._origen||'pagos'}')" title="Ver detalle"><i class="fa-solid fa-eye"></i></button>
-          <button class="tbl-action-btn tbl-btn-edit" onclick="openPagoModal(${r.id})" title="Editar cobro"><i class="fa-solid fa-pen-to-square"></i></button>
+          ${(() => {
+            const esTransf = r.medio_pago === 'Transferencia' || r.medio_pago === 'MercadoPago';
+            const sinCuenta = !r.cuenta_id_val;
+            const imputado = parseFloat(r.imputado_total || 0);
+            const monto_total = parseFloat(r.monto_total || 0);
+            const sinImputar = esTransf && monto_total > 0 && imputado < monto_total - 0.01;
+            const needsAttention = sinCuenta || sinImputar;
+            const tip = sinCuenta ? 'Cuenta no identificada — completar'
+                      : sinImputar ? 'Transferencia pendiente de imputar — completar conceptos'
+                      : 'Editar cobro';
+            return `<button class="tbl-action-btn ${needsAttention ? 'tbl-btn-warn' : 'tbl-btn-edit'}" onclick="openPagoModal(${r.id})" title="${tip}"><i class="fa-solid ${needsAttention ? 'fa-clock' : 'fa-pen-to-square'}"></i></button>`;
+          })()}
           ${middleBtns}
           <button class="tbl-action-btn tbl-btn-delete" onclick="deleteRendicion(${r.id})" title="Eliminar"><i class="fa-solid fa-trash"></i></button>
         </td>
       </tr>`;
     }).join('');
     const badge = document.getElementById('rend-total-badge');
-    if (badge) badge.textContent = `Total: ${formatCurrency(total)}`;
+    if (badge) animateCounter(badge, total, v => formatCurrency(v));
+    const rendCountBadge = document.getElementById('rend-count-badge');
+    if (rendCountBadge) rendCountBadge.textContent = data.length ? `${data.length} cobranza${data.length !== 1 ? 's' : ''}` : '';
+    const rendRow = document.getElementById('rend-totals-row');
+    if (rendRow) rendRow.style.display = '';
+    staggerTableRows(document.getElementById('rendiciones-table-body'));
     injectExportBar('table-rendiciones', 'Rendiciones');
   } catch(e) {
     if (!silent) showToast('Error al cargar rendiciones: ' + e.message, 'error');
@@ -12413,10 +13535,35 @@ function filterRendicionesTable(q) {
 }
 
 function clearRendicionesFilters() {
-  ['rend-filter-desde','rend-filter-hasta','rend-filter-chofer','rend-filter-cuenta'].forEach(id => {
-    const el = document.getElementById(id); if (el) el.value = '';
+  ['rend-filter-desde','rend-filter-hasta','rend-filter-chofer','rend-filter-cuenta','rendiciones-search-input'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (el._ssSet) el._ssSet(''); else el.value = '';
   });
+  filterRendicionesTable('');
   loadRendiciones();
+}
+
+async function buscarFacturaWa(id) {
+  showToast('Buscando PDF en historial de WhatsApp...', 'info');
+  try {
+    const res = await fetch(`/api/pagos/${id}/factura-buscar-wa`, { method: 'POST' });
+    const d   = await res.json();
+    if (!res.ok) { showToast(d.message || 'No se encontró PDF', 'error'); return; }
+    showToast('✅ Factura vinculada desde WhatsApp', 'success');
+    loadRendiciones(true);
+  } catch(e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+async function cancelarFacturaPending(id) {
+  const ok = await showConfirm('¿Cancelar la factura pendiente de Facturitas?\nEl cobro vuelve al estado sin factura.');
+  if (!ok) return;
+  try {
+    const res = await fetch(`/api/pagos/${id}/factura-pending`, { method: 'DELETE' });
+    if (!res.ok) { const d = await res.json(); showToast(d.message || 'Error', 'error'); return; }
+    showToast('Pendiente cancelado', 'success');
+    loadRendiciones(true);
+  } catch(e) { showToast('Error: ' + e.message, 'error'); }
 }
 
 async function viewRendicion(id, origen) {
@@ -12460,6 +13607,134 @@ async function facturarRendicion(id) {
       } catch { clearInterval(poll); }
     }, 4000);
   } catch(e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+async function consultarCuilAfip() {
+  const cuil = document.getElementById('ch-cuil')?.value?.replace(/[-\s]/g, '');
+  if (!cuil || cuil.length !== 11) { showToast('Ingresá un CUIL de 11 dígitos', 'error'); return; }
+  const resDiv = document.getElementById('ch-afip-result');
+  resDiv.style.display = 'block';
+  resDiv.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Consultando AFIP...';
+  try {
+    const res  = await fetch(`/api/afip/contribuyente/${cuil}`);
+    const data = await res.json();
+    if (!res.ok) { resDiv.innerHTML = `<i class="fa-solid fa-circle-xmark" style="color:#ef4444"></i> ${data.message}`; return; }
+
+    const nombre = data.razon_social || [data.nombre, data.apellido].filter(Boolean).join(' ') || '—';
+    resDiv.innerHTML = `
+      <i class="fa-solid fa-circle-check" style="color:#22c55e"></i>
+      <strong>${nombre}</strong> &nbsp;·&nbsp; ${data.condicion_iva}
+      ${data.estado !== 'ACTIVO' ? `&nbsp;<span style="color:#ef4444">(${data.estado})</span>` : ''}
+      ${data.domicilio ? `<br><span style="color:var(--text-secondary)">${data.domicilio}</span>` : ''}
+    `;
+
+    // Auto-completar nombre/apellido si el form está vacío
+    const fNombre   = document.getElementById('ch-nombre');
+    const fApellido = document.getElementById('ch-apellido');
+    if (fNombre   && !fNombre.value   && data.nombre)   fNombre.value   = data.nombre;
+    if (fApellido && !fApellido.value && data.apellido) fApellido.value = data.apellido;
+  } catch(e) {
+    resDiv.innerHTML = `<i class="fa-solid fa-circle-xmark" style="color:#ef4444"></i> Error: ${e.message}`;
+  }
+}
+
+async function facturarAfip(id) {
+  // Intentar resolución automática: cuenta → propietario → contribuyente AFIP
+  let contribId = null;
+  try {
+    const rAuto = await fetch(`/api/pagos/${id}/facturar-afip`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const dAuto = await rAuto.json();
+    if (rAuto.ok) {
+      showToast(`✓ Factura B emitida por ${dAuto.emisor} — CAE ${dAuto.cae}`, 'success');
+      loadRendiciones(true);
+      return;
+    }
+    // Si el error no es "no encontró contribuyente", mostrarlo y salir
+    if (rAuto.status !== 400 || !dAuto.message?.includes('No se encontró')) {
+      showToast(dAuto.message || 'Error AFIP', 'error');
+      return;
+    }
+  } catch(e) { showToast('Error: ' + e.message, 'error'); return; }
+
+  // Fallback: selección manual de contribuyente
+  let contribs = [];
+  try {
+    const r = await fetch('/api/afip/contribuyentes');
+    const all = await r.json();
+    contribs = all.filter(c => c.activo && c.tiene_cert && c.tiene_key);
+  } catch(e) { showToast('Error cargando contribuyentes AFIP', 'error'); return; }
+
+  if (!contribs.length) {
+    showToast('No hay contribuyentes AFIP con certificado cargado. Configurá uno en ARCA → Contribuyentes.', 'error');
+    return;
+  }
+
+  const opts = contribs.map(c => `<option value="${c.id}">${c.nombre} (${c.cuit})</option>`).join('');
+  contribId = await new Promise(resolve => {
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.innerHTML = `
+      <div class="modal-box" style="max-width:400px">
+        <div class="modal-header"><h3>Emitir Factura B · Cobro #${id}</h3></div>
+        <div class="modal-body" style="padding:20px">
+          <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;">
+            <i class="fa-solid fa-triangle-exclamation" style="color:#f59e0b"></i>
+            La cuenta no tiene propietario/contribuyente AFIP vinculado. Seleccioná manualmente.
+          </p>
+          <label class="form-label">Contribuyente emisor</label>
+          <select id="_afip-contrib-sel" class="form-control">${opts}</select>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="_afip-cancel">Cancelar</button>
+          <button class="btn btn-primary" id="_afip-confirm"><i class="fa-solid fa-a"></i> Emitir</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    modal.querySelector('#_afip-cancel').onclick  = () => { modal.remove(); resolve(null); };
+    modal.querySelector('#_afip-confirm').onclick = () => { const v = modal.querySelector('#_afip-contrib-sel').value; modal.remove(); resolve(v); };
+  });
+  if (!contribId) return;
+
+  try {
+    const res  = await fetch(`/api/pagos/${id}/facturar-afip`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contribuyente_id: contribId })
+    });
+    const data = await res.json();
+    if (!res.ok) { showToast(data.message || 'Error AFIP', 'error'); return; }
+    showToast(`✓ Factura B emitida por ${data.emisor} — CAE ${data.cae}`, 'success');
+    loadRendiciones(true);
+  } catch(e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+function adjuntarFacturaPDF(id) {
+  // Input file oculto reutilizable
+  let inp = document.getElementById('_fact-pdf-inp');
+  if (!inp) {
+    inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = 'application/pdf';
+    inp.id = '_fact-pdf-inp'; inp.style.display = 'none';
+    document.body.appendChild(inp);
+  }
+  inp.value = '';
+  inp.onchange = async () => {
+    const file = inp.files[0];
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('pdf', file);
+    showToast('Subiendo PDF...', 'info');
+    try {
+      const res = await fetch(`/api/pagos/${id}/factura-manual`, { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.message || 'Error al subir PDF', 'error'); return; }
+      showToast('✓ Factura PDF adjuntada correctamente', 'success');
+      loadRendiciones(true);
+    } catch(e) { showToast('Error: ' + e.message, 'error'); }
+  };
+  inp.click();
 }
 
 let _rendChartType = 'bar';
@@ -12521,23 +13796,110 @@ async function renderRendicionesCharts() {
     rends.forEach(r => { byChofer[r.chofer_nombre||'?'] = (byChofer[r.chofer_nombre||'?']||0) + parseFloat(r.monto_total||0); });
     const topChofer = Object.entries(byChofer).sort((a,b)=>b[1]-a[1]).slice(0,10);
 
-    const chartOpts = (labels, data, idx) => ({
+    const PALETTE = [
+      { top: '#818CF8', bot: '#4338CA' },
+      { top: '#34D399', bot: '#047857' },
+      { top: '#FB923C', bot: '#C2410C' },
+      { top: '#60A5FA', bot: '#1D4ED8' },
+      { top: '#F472B6', bot: '#BE185D' },
+      { top: '#A78BFA', bot: '#6D28D9' },
+      { top: '#FCD34D', bot: '#B45309' },
+      { top: '#22D3EE', bot: '#0E7490' },
+    ];
+    const isPie = _rendChartType === 'pie';
+    const gradPlugin = {
+      id: 'rend_grad',
+      beforeDatasetsDraw(chart) {
+        const { ctx, chartArea } = chart;
+        if (!chartArea || isPie) return;
+        const ds = chart.data.datasets[0];
+        // Sobrescribimos backgroundColor con gradientes reales — Chart.js los usa en el mismo ciclo de dibujo
+        ds.backgroundColor = chart.data.labels.map((_, i) => {
+          const p = PALETTE[i % PALETTE.length];
+          const g = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+          g.addColorStop(0, p.top);
+          g.addColorStop(1, p.bot);
+          return g;
+        });
+      }
+    };
+    const shadowPlugin = {
+      id: 'rend_shadow',
+      beforeDatasetDraw(chart) {
+        const ctx = chart.ctx;
+        ctx.save();
+        ctx.shadowColor = 'rgba(0,0,0,0.30)';
+        ctx.shadowBlur = 12;
+        ctx.shadowOffsetX = 3;
+        ctx.shadowOffsetY = 6;
+      },
+      afterDatasetDraw(chart) { chart.ctx.restore(); }
+    };
+    const chartOpts = (labels, data) => ({
       type: _rendChartType,
       data: {
         labels,
-        datasets: [{ data, backgroundColor: labels.map((_,i) => colors[i % colors.length]), borderWidth: 1 }]
+        datasets: [{
+          data,
+          backgroundColor: labels.map((_, i) => PALETTE[i % PALETTE.length].top),
+          borderColor:      labels.map((_, i) => PALETTE[i % PALETTE.length].bot),
+          borderWidth: isPie ? 2 : 0,
+          borderRadius: isPie ? 0 : 10,
+          borderSkipped: false,
+          hoverOffset: isPie ? 22 : 0,
+          hoverBackgroundColor: labels.map((_, i) => PALETTE[i % PALETTE.length].top),
+        }]
       },
       options: {
         responsive: true,
+        animation: { duration: 900, easing: 'easeInOutQuart' },
         plugins: {
-          legend: { display: _rendChartType === 'pie', labels: { color: txtColor, font: { size: 11 } } },
-          datalabels: showLabels ? { color: txtColor, formatter: v => formatCurrency(v), font: { size: 10 } } : false
+          legend: {
+            display: isPie,
+            labels: {
+              color: txtColor, font: { size: 12, weight: '600' },
+              padding: 16, usePointStyle: true, pointStyleWidth: 12
+            }
+          },
+          datalabels: showLabels ? {
+            anchor: 'end',
+            align: 'top',
+            color: txtColor,
+            formatter: v => formatCurrency(v),
+            font: { size: 10, weight: '700' },
+            clip: false,
+            clamp: true,
+          } : false,
+          tooltip: {
+            backgroundColor: 'rgba(10,10,20,0.90)',
+            titleColor: '#fff',
+            bodyColor: '#94a3b8',
+            borderColor: 'rgba(129,140,248,0.5)',
+            borderWidth: 1,
+            padding: 10,
+            cornerRadius: 8,
+            callbacks: {
+              label: ctx => '  ' + formatCurrency(ctx.parsed.y ?? ctx.parsed)
+            }
+          }
         },
-        scales: _rendChartType === 'pie' ? {} : {
-          x: { display: showX, ticks: { color: txtColor, font: { size: 10 } } },
-          y: { display: showY, ticks: { color: txtColor, font: { size: 10 }, callback: v => '$' + v.toLocaleString('es-AR') } }
+        scales: isPie ? {} : {
+          x: {
+            display: showX,
+            ticks: { color: txtColor, font: { size: 11 } },
+            grid: { display: false }
+          },
+          y: {
+            display: showY,
+            ticks: {
+              color: txtColor, font: { size: 10 },
+              callback: v => '$' + (v >= 1000 ? (v/1000).toFixed(0) + 'k' : v)
+            },
+            grid: { color: 'rgba(148,163,184,0.10)', borderDash: [5, 5] }
+          }
         }
-      }
+      },
+      plugins: [gradPlugin, shadowPlugin]
     });
 
     ['chart-by-medio','chart-by-cuenta','chart-by-chofer','chart-by-concepto'].forEach(id => {
@@ -12580,7 +13942,7 @@ function exportRendicionesChartWA() {
 let _personaEditId = null;
 
 async function loadPersonas() {
-  const q = document.getElementById('personas-search')?.value?.trim() || '';
+  const q = document.getElementById('personas-search-input')?.value?.trim() || '';
   const url = '/api/personas' + (q ? `?q=${encodeURIComponent(q)}` : '');
   const rows = await fetch(url).then(r => r.json()).catch(() => []);
   const tbody = document.getElementById('personas-tbody');
@@ -13539,7 +14901,86 @@ function _calcHoras(ini, fin) {
   return h > 0 ? h : null;
 }
 // ── TURNOS GRÁFICOS ──────────────────────────────────────────────
-let _tgChartBar = null, _tgChartPieCh = null, _tgChartPieVeh = null;
+// ── Paleta y plugins compartidos para TODOS los gráficos ──────────────────────
+const _CHART_PALETTE = [
+  { top: '#818CF8', bot: '#4338CA' },
+  { top: '#34D399', bot: '#047857' },
+  { top: '#FB923C', bot: '#C2410C' },
+  { top: '#60A5FA', bot: '#1D4ED8' },
+  { top: '#F472B6', bot: '#BE185D' },
+  { top: '#A78BFA', bot: '#6D28D9' },
+  { top: '#FCD34D', bot: '#B45309' },
+  { top: '#22D3EE', bot: '#0E7490' },
+];
+
+// Crea plugins de gradiente + sombra reutilizables
+// singleColor: si es true, aplica un gradiente sobre un solo color (barras de serie temporal)
+// singleColor: string → gradiente monocolorcon ese color (serie temporal)
+//              null    → multi-dataset: usa el color original de cada dataset
+//              undefined → categorías: usa _CHART_PALETTE por barra
+function _makeChartPlugins(isPie, singleColor) {
+  const _origColors = new WeakMap();
+  const gradPlugin = {
+    id: 'grad_' + Math.random().toString(36).slice(2),
+    beforeDatasetsDraw(chart) {
+      const { ctx, chartArea } = chart;
+      if (!chartArea || isPie) return;
+      chart.data.datasets.forEach((ds, di) => {
+        // Guardar color original la primera vez
+        if (!_origColors.has(ds)) _origColors.set(ds, ds.backgroundColor);
+        const orig = _origColors.get(ds);
+        ds.backgroundColor = chart.data.labels.map((_, i) => {
+          let top, bot;
+          if (singleColor) {
+            // Serie temporal: un color del picker
+            top = singleColor; bot = singleColor + 'aa';
+          } else if (null === singleColor) {
+            // Multi-dataset: usa el color original de cada dataset
+            const base = typeof orig === 'string' ? orig : (orig?.[i] || '#888');
+            top = base; bot = base + 'aa';
+          } else {
+            // Categorías: paleta por barra
+            const p = _CHART_PALETTE[i % _CHART_PALETTE.length];
+            top = p.top; bot = p.bot;
+          }
+          const g = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+          g.addColorStop(0, top);
+          g.addColorStop(1, bot);
+          return g;
+        });
+      });
+    }
+  };
+  const shadowPlugin = {
+    id: 'shd_' + Math.random().toString(36).slice(2),
+    // usar hooks POR-dataset (singular) para que ctx.restore() corra ANTES de que
+    // ChartDataLabels (plugin global) dibuje en afterDatasetsDraw — evita sombra en etiquetas
+    beforeDatasetDraw(chart) {
+      chart.ctx.save();
+      chart.ctx.shadowColor   = 'rgba(0,0,0,0.28)';
+      chart.ctx.shadowBlur    = 10;
+      chart.ctx.shadowOffsetX = 3;
+      chart.ctx.shadowOffsetY = 5;
+    },
+    afterDatasetDraw(chart) { chart.ctx.restore(); }
+  };
+  return [gradPlugin, shadowPlugin];
+}
+
+// Opciones comunes de tooltip y grid para todos los módulos
+function _chartTooltip() {
+  return {
+    backgroundColor: 'rgba(10,10,20,0.90)',
+    titleColor: '#fff', bodyColor: '#94a3b8',
+    borderColor: 'rgba(129,140,248,0.5)', borderWidth: 1,
+    padding: 10, cornerRadius: 8
+  };
+}
+function _chartGrid() {
+  return { color: 'rgba(148,163,184,0.10)', borderDash: [5, 5] };
+}
+// ─────────────────────────────────────────────────────────────────────────────
+let _tgChartBar = null, _tgChartBarVeh = null, _tgChartPieCh = null, _tgChartPieVeh = null;
 let _tgMetric   = 'importe';
 let _tgData     = [];   // datos crudos del período
 
@@ -13662,17 +15103,8 @@ function _tgRenderCharts(redrawOnly) {
   const tgFmtLabel = v => v > 0 ? _tgFmt(v) : null;
 
   // ── Barras: redrawOnly ──
-  if (_tgChartBar && redrawOnly) {
-    _tgChartBar.data.datasets[0].backgroundColor = hexAlpha(colorBar, 0.75);
-    _tgChartBar.data.datasets[0].borderColor      = colorBar;
-    _tgChartBar.options.plugins.datalabels = showLabels
-      ? { display: true, anchor: 'end', align: 'top', color: colorX, font: { size: 9, weight: '600' }, formatter: tgFmtLabel, clip: false }
-      : { display: false };
-    _tgChartBar.options.scales.x.ticks = showX ? { color: colorX, font: { size: 10 } } : { display: false };
-    _tgChartBar.options.scales.y.ticks = showY ? { color: colorY, callback: tgFmtTick } : { display: false };
-    _tgChartBar.update();
-  } else {
-    // ── Barras: crear ──
+  // Siempre recrear (el redrawOnly solo ajustaba colores, ahora los plugins manejan gradientes)
+  {
     const ctxBar = document.getElementById('tg-chart-bar').getContext('2d');
     if (_tgChartBar) { _tgChartBar.destroy(); _tgChartBar = null; }
     _tgChartBar = new Chart(ctxBar, {
@@ -13682,35 +15114,118 @@ function _tgRenderCharts(redrawOnly) {
         datasets: [{
           label: metricLabel[_tgMetric],
           data: values,
-          backgroundColor: hexAlpha(colorBar, 0.75),
-          borderColor: colorBar,
-          borderWidth: 1,
-          borderRadius: 4
+          backgroundColor: colorBar,
+          borderColor: 'transparent',
+          borderWidth: 0,
+          borderRadius: 10,
+          borderSkipped: false,
         }]
       },
       options: {
         responsive: true, maintainAspectRatio: false,
+        animation: { duration: 900, easing: 'easeInOutQuart' },
         interaction: { mode: 'index', intersect: false },
         plugins: {
           legend: { labels: { color: colorX, font: { size: 11 } } },
           datalabels: showLabels
-            ? { display: true, anchor: 'end', align: 'top', color: colorX, font: { size: 9, weight: '600' }, formatter: tgFmtLabel, clip: false }
+            ? { display: true, anchor: 'end', align: 'top', color: colorX, font: { size: 9, weight: '700' }, formatter: tgFmtLabel, clip: false, clamp: true }
             : { display: false },
-          tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${_tgFmt(ctx.parsed.y)}` } }
+          tooltip: { ...(_chartTooltip()), callbacks: { label: ctx => `  ${ctx.dataset.label}: ${_tgFmt(ctx.parsed.y)}` } }
         },
         scales: {
           x: {
-            grid: { color: 'rgba(128,128,128,.12)' },
+            grid: { display: false },
             ticks: showX ? { color: colorX, font: { size: 10 } } : { display: false }
           },
           y: {
             beginAtZero: true,
-            grid: { color: 'rgba(128,128,128,.12)' },
+            grid: _chartGrid(),
             ticks: showY ? { color: colorY, callback: tgFmtTick } : { display: false }
           }
         }
-      }
+      },
+      plugins: _makeChartPlugins(false, colorBar)
     });
+  }
+
+  // ── Barras agrupadas por vehículo ──
+  {
+    const vehList = [...new Set(_tgData.map(t => t.vehiculo_patente).filter(Boolean))].sort();
+    const periodKey = t => {
+      if (agrup === 'chofer' || agrup === 'vehiculo') {
+        const d = new Date(t.fecha_inicio);
+        return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+      }
+      return groups.find(() => true)?.label ? _tgGroup([t], agrup)[0]?.label : '';
+    };
+    // Reusar la misma lógica de agrupación pero por vehículo × período
+    const periodos = labels.length ? labels : [...new Set(_tgData.map(t => {
+      const d = new Date(t.fecha_inicio);
+      if (agrup === 'semana') {
+        const s = new Date(d.getFullYear(),0,1);
+        return `${d.getFullYear()}-S${String(Math.ceil(((d-s)/86400000+s.getDay()+1)/7)).padStart(2,'0')}`;
+      }
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    })).sort()];
+
+    // Para agrupacion chofer/vehiculo no tiene sentido temporal — mostrar por mes igualmente
+    const periodosMes = [...new Set(_tgData.map(t => {
+      const d = new Date(t.fecha_inicio);
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    }))].sort();
+    const usePeriodos = (agrup === 'mes' || agrup === 'semana') ? periodos : periodosMes;
+
+    const vehMesMap = {};
+    _tgData.forEach(t => {
+      const pat = t.vehiculo_patente; if (!pat) return;
+      const d = new Date(t.fecha_inicio);
+      let pk;
+      if (agrup === 'semana') {
+        const s = new Date(d.getFullYear(),0,1);
+        pk = `${d.getFullYear()}-S${String(Math.ceil(((d-s)/86400000+s.getDay()+1)/7)).padStart(2,'0')}`;
+      } else {
+        pk = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+      }
+      if (!vehMesMap[pat]) vehMesMap[pat] = {};
+      const val = _tgMetric === 'horas' ? (_calcHoras(t.fecha_inicio, t.fecha_fin)||0)
+                : _tgMetric === 'recorrido' ? (parseFloat(t.km_fin||0)-parseFloat(t.km_inicio||0))
+                : _tgMetric === 'adeuda' ? (parseFloat(t.peajes_auto||0)+parseFloat(t.multas_pendientes||0))
+                : parseFloat(t[_tgMetric]||0);
+      vehMesMap[pat][pk] = (vehMesMap[pat][pk]||0) + val;
+    });
+
+    const vehCvs = document.getElementById('tg-chart-bar-veh');
+    if (_tgChartBarVeh) { _tgChartBarVeh.destroy(); _tgChartBarVeh = null; }
+    if (vehCvs && vehList.length && usePeriodos.length) {
+      _tgChartBarVeh = new Chart(vehCvs, {
+        type: 'bar',
+        data: {
+          labels: usePeriodos,
+          datasets: vehList.map((pat, i) => ({
+            label: pat,
+            data: usePeriodos.map(p => vehMesMap[pat]?.[p] || 0),
+            backgroundColor: _CHART_PALETTE[i%_CHART_PALETTE.length].top,
+            borderColor:     _CHART_PALETTE[i%_CHART_PALETTE.length].bot,
+            borderWidth: 0, borderRadius: 6, borderSkipped: false,
+          }))
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          animation: { duration: 900, easing: 'easeInOutQuart' },
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: { position: 'bottom', labels: { font: { size: 10, weight: '600' }, usePointStyle: true, boxWidth: 10 } },
+            datalabels: { display: false },
+            tooltip: { ..._chartTooltip(), callbacks: { label: ctx => `  ${ctx.dataset.label}: ${_tgFmt(ctx.parsed.y)}` } }
+          },
+          scales: {
+            x: { grid: { display: false }, ticks: { font: { size: 10 }, color: colorX } },
+            y: { grid: _chartGrid(), ticks: { font: { size: 10 }, color: colorY, callback: tgFmtTick } }
+          }
+        },
+        plugins: _makeChartPlugins(false, null)
+      });
+    }
   }
 
   // ── Torta Chofer ──
@@ -13721,14 +15236,19 @@ function _tgRenderCharts(redrawOnly) {
     type: 'doughnut',
     data: {
       labels: byChofer.map(g=>g.label),
-      datasets: [{ data: byChofer.map(g=>Math.max(0,g[_tgMetric]||0)), backgroundColor: colors.map(c=>c+'cc'), borderWidth: 1 }]
+      datasets: [{ data: byChofer.map(g=>Math.max(0,g[_tgMetric]||0)),
+        backgroundColor: byChofer.map((_,i)=>_CHART_PALETTE[i%_CHART_PALETTE.length].top),
+        borderColor: byChofer.map((_,i)=>_CHART_PALETTE[i%_CHART_PALETTE.length].bot),
+        borderWidth: 2, hoverOffset: 20 }]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
+      animation: { duration: 900, easing: 'easeInOutQuart' },
       plugins: {
-        legend: { position: 'bottom', labels: { font: { size: 11 }, boxWidth: 12 } },
-        title:  { display: true, text: 'Por chofer', font: { size: 12 } },
-        datalabels: { display: false }
+        legend: { position: 'bottom', labels: { font: { size: 11, weight: '600' }, boxWidth: 12, usePointStyle: true } },
+        title:  { display: true, text: 'Por chofer', font: { size: 12, weight: '700' } },
+        datalabels: { display: false },
+        tooltip: _chartTooltip()
       }
     }
   });
@@ -13741,14 +15261,19 @@ function _tgRenderCharts(redrawOnly) {
     type: 'doughnut',
     data: {
       labels: byVeh.map(g=>g.label),
-      datasets: [{ data: byVeh.map(g=>Math.max(0,g[_tgMetric]||0)), backgroundColor: colors.map(c=>c+'cc'), borderWidth: 1 }]
+      datasets: [{ data: byVeh.map(g=>Math.max(0,g[_tgMetric]||0)),
+        backgroundColor: byVeh.map((_,i)=>_CHART_PALETTE[i%_CHART_PALETTE.length].top),
+        borderColor: byVeh.map((_,i)=>_CHART_PALETTE[i%_CHART_PALETTE.length].bot),
+        borderWidth: 2, hoverOffset: 20 }]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
+      animation: { duration: 900, easing: 'easeInOutQuart' },
       plugins: {
-        legend: { position: 'bottom', labels: { font: { size: 11 }, boxWidth: 12 } },
-        title:  { display: true, text: 'Por vehículo', font: { size: 12 } },
-        datalabels: { display: false }
+        legend: { position: 'bottom', labels: { font: { size: 11, weight: '600' }, boxWidth: 12, usePointStyle: true } },
+        title:  { display: true, text: 'Por vehículo', font: { size: 12, weight: '700' } },
+        datalabels: { display: false },
+        tooltip: _chartTooltip()
       }
     }
   });
@@ -14157,7 +15682,8 @@ function _renderTurnos(totalRendiciones = 0) {
     document.getElementById('tt-km').textContent     = totKm      > 0 ? _fmtN(totKm,0) + ' km'  : '';
     document.getElementById('tt-gnc').textContent    = totGnc    > 0 ? _fmtAmt(totGnc)    : '';
     document.getElementById('tt-viajes').textContent = totViajes > 0 ? _fmtAmt(totViajes) : '';
-    document.getElementById('tt-importe').textContent= totImporte > 0 ? _fmtAmt(totImporte)       : '';
+    const _ttImporte = document.getElementById('tt-importe');
+    if (_ttImporte) { if (totImporte > 0) animateCounter(_ttImporte, totImporte, v => _fmtAmt(v)); else _ttImporte.textContent = ''; }
     document.getElementById('tt-pjauto').textContent = totPjAuto  > 0 ? _fmtAmt(totPjAuto)        : '';
     document.getElementById('tt-multas').textContent = totMultas  > 0 ? _fmtAmt(totMultas)        : '';
     const totDia = totImporte + totPjAuto + totMultas;
@@ -14168,38 +15694,30 @@ function _renderTurnos(totalRendiciones = 0) {
   }
   // Saldo = Total Día (importe + peajes + multas) − Pagos (rendiciones)
   const saldo = totImporte + totPjAuto + totMultas - totalRendiciones;
+  staggerTableRows(document.getElementById('turnos-tbody'));
   injectExportBar('table-turnos', 'Turnos');
   _renderTurnosSaldo(saldo);
 }
 
 function _renderTurnosSaldo(saldo) {
-  const bar = document.getElementById('export-bar-table-turnos');
-  if (!bar) return;
-  let el = document.getElementById('turnos-saldo-badge');
-  if (!el) {
-    el = document.createElement('div');
-    el.id = 'turnos-saldo-badge';
-    el.style.cssText = 'display:inline-flex;align-items:center;gap:5px;margin-right:10px;';
-    const firstBtn = bar.querySelector('button');
-    if (firstBtn) bar.insertBefore(el, firstBtn);
-    else bar.appendChild(el);
-  }
-  const color = saldo >= 0 ? '#22c55e' : '#ef4444';
-  const signo = saldo >= 0 ? '+' : '';
-  el.innerHTML =
-    `<span style="font-size:10px;color:var(--text-secondary);font-weight:700;letter-spacing:.5px;text-transform:uppercase;">Saldo</span>` +
-    `<span style="font-size:20px;font-weight:800;color:${color};letter-spacing:-.5px;">${signo}$ ${Math.abs(saldo).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2})}</span>`;
+  const slot  = document.getElementById('turnos-saldo-slot');
+  const valor = document.getElementById('turnos-saldo-valor');
+  if (!slot || !valor) return;
 
-  // Botón Detalle — se inserta inmediatamente después del badge de saldo
-  if (!document.getElementById('turnos-detalle-btn')) {
-    const btn = document.createElement('button');
-    btn.id        = 'turnos-detalle-btn';
-    btn.className = 'btn-export';
-    btn.title     = 'Detalle del período por chofer';
-    btn.innerHTML = '<i class="fa-solid fa-list-check"></i> Detalle';
-    btn.onclick   = openTurnosDetalle;
-    el.insertAdjacentElement('afterend', btn);
-  }
+  const color    = saldo >= 0 ? '#22c55e' : '#ef4444';
+  const signo    = saldo >= 0 ? '+' : '−';
+  const monto    = Math.abs(saldo).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const borderC  = saldo >= 0 ? 'rgba(34,197,94,.35)' : 'rgba(239,68,68,.35)';
+
+  valor.textContent      = `${signo}$ ${monto}`;
+  valor.style.color      = color;
+  slot.style.display     = 'flex';
+  slot.style.borderColor = borderC;
+
+  // Mostrar botón Detalle solo cuando hay un chofer filtrado
+  const choferId = document.getElementById('turnos-filter-chofer')?.value;
+  const detalleBtn = document.getElementById('turnos-detalle-btn');
+  if (detalleBtn) detalleBtn.style.display = choferId ? '' : 'none';
 }
 
 async function openTurnosDetalle() {
@@ -14259,8 +15777,9 @@ function _buildTurnosDetalleRows(rendList) {
     const mul   = r.cmap?.multas   || 0;
     const hasB  = alq + pj + mul > 0;
     const fch   = r.fecha ? new Date(r.fecha) : new Date(0);
+    const fchHora = fch.getTime() ? fch.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit',hour12:false}) : '';
     rows.push({ tipo:'rendicion', id: r.id, origen: r._origen || 'rendiciones', fecha:fch,
-      label: fch.getTime() ? fch.toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',year:'2-digit'}) : '—',
+      label: fch.getTime() ? fch.toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',year:'2-digit'}) + (fchHora ? ' ' + fchHora : '') : '—',
       alquiler: hasB ? -alq : -monto,   // si hay desglose, alquiler; si no, total en col alquiler
       peajes:  -pj, multas: -mul,
       total:   -monto,                   // siempre el total real de la rendición
@@ -14764,13 +16283,14 @@ function _renderTurnoDetalle(t) {
   if (multas.length) {
     const total = multas.reduce((s,m) => s + parseFloat(m.monto||0), 0);
     html += `<div style="margin-top:12px;">
-      <div style="font-weight:600;color:#ef4444;margin-bottom:4px;"><i class="fa-solid fa-triangle-exclamation"></i> Multas pendientes — ${_fmtPeso(total)}</div>
+      <div style="font-weight:600;color:#ef4444;margin-bottom:4px;"><i class="fa-solid fa-triangle-exclamation"></i> Multas del turno — ${_fmtPeso(total)}</div>
       <table style="width:100%;font-size:12px;border-collapse:collapse;">
         <thead><tr style="color:var(--text-secondary);border-bottom:1px solid var(--border-color);">
           <th style="text-align:left;padding:3px 6px;">Acta</th>
           <th style="text-align:left;padding:3px 6px;">Descripción</th>
           <th style="text-align:center;padding:3px 6px;">Fecha y Hora</th>
           <th style="text-align:right;padding:3px 6px;">Monto</th>
+          <th style="text-align:center;padding:3px 6px;">Estado</th>
           <th style="text-align:center;padding:3px 6px;">Adj.</th>
         </tr></thead><tbody>
         ${multas.map(m => {
@@ -14788,11 +16308,18 @@ function _renderTurnoDetalle(t) {
             ? new Date(m.fecha_infraccion).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',year:'2-digit'})
               + (m.hora_infraccion ? ' ' + m.hora_infraccion.slice(0,5) : '')
             : '—';
-          return `<tr style="border-top:1px solid var(--border-color);">
+          const estadoBadge = m.estado === 'pagada'
+            ? `<span style="background:#22c55e;color:#fff;font-size:10px;padding:1px 6px;border-radius:4px;font-weight:600;">Pagada</span>`
+            : m.estado === 'apelada'
+            ? `<span style="background:#3b82f6;color:#fff;font-size:10px;padding:1px 6px;border-radius:4px;font-weight:600;">Apelada</span>`
+            : `<span style="background:#f59e0b;color:#fff;font-size:10px;padding:1px 6px;border-radius:4px;font-weight:600;">Pendiente</span>`;
+          const rowStyle = m.estado === 'pagada' ? 'opacity:.7;' : '';
+          return `<tr style="border-top:1px solid var(--border-color);${rowStyle}">
             <td style="padding:3px 6px;white-space:nowrap;">${m.numero_acta||'—'}</td>
             <td style="padding:3px 6px;">${m.descripcion||'—'}</td>
             <td style="padding:3px 6px;text-align:center;white-space:nowrap;">${fechaHora}</td>
             <td style="padding:3px 6px;text-align:right;color:#ef4444;">${_fmtPeso(m.monto)}</td>
+            <td style="padding:3px 6px;text-align:center;">${estadoBadge}</td>
             <td style="padding:3px 6px;text-align:center;">${adjHtml}</td>
           </tr>`;
         }).join('')}
@@ -14955,6 +16482,8 @@ async function shareTurnoDetalleWA() {
   if (totalPeajes > 0) partes.push(`peajes ${_fmtPeso(totalPeajes)}`);
   if (totalMultas > 0) partes.push(`multas ${_fmtPeso(totalMultas)}`);
   txt += `_${partes.join(' + ')}_`;
+  txt += '\n' + SEP + '\n';
+  txt += `🚭 _Recordatorio: está prohibido fumar dentro del vehículo — chofer y pasajeros._`;
 
   // Pre-generar XLS para adjuntar
   if (window.XLSX) {
@@ -14986,8 +16515,17 @@ async function _loadWAMultaAdjs(multas) {
   ));
 
   results.forEach((adjs, i) => {
+    const m = multas[i];
+    // Agregar comprobante de pago primero si existe y no está ya en adjuntos
+    if (m.comprobante_pago_url) {
+      const compNombre = `Comprobante_${m.numero_acta || m.id}.pdf`;
+      const yaEsta = adjs.some(a => a.url === m.comprobante_pago_url);
+      if (!yaEsta) {
+        _waMultaAdjs.push({ url: m.comprobante_pago_url, nombre: compNombre, tipo: 'pdf', multaId: m.id, esComprobante: true });
+      }
+    }
     adjs.forEach(a => {
-      _waMultaAdjs.push({ url: a.url, nombre: a.nombre_original || a.url.split('/').pop(), tipo: a.tipo, multaId: multas[i].id });
+      _waMultaAdjs.push({ url: a.url, nombre: a.nombre_original || a.url.split('/').pop(), tipo: a.tipo, multaId: m.id });
     });
   });
 
@@ -15633,7 +17171,797 @@ async function saveCuotasPaste() {
   showAlert(`✓ ${data.count} cuotas guardadas correctamente`);
 }
 
+// ── Préstamos: toggle search ────────────────────────────────────────────────
+function togglePrestamosSearch() {
+  const btn   = document.getElementById('prestamos-search-btn');
+  const input = document.getElementById('prestamos-search');
+  const opening = !btn.classList.contains('active');
+  if (opening) {
+    input.style.display = '';
+    requestAnimationFrame(() => input.classList.add('open'));
+    btn.classList.add('active');
+    setTimeout(() => input.focus(), 50);
+  } else {
+    input.classList.remove('open');
+    btn.classList.remove('active');
+    input.value = '';
+    loadPrestamos();
+    setTimeout(() => { input.style.display = 'none'; }, 260);
+  }
+}
+
+// ── Préstamos: Gráficos ──────────────────────────────────────────────────────
+let _prChartInstance     = null;
+let _prChartLineas       = null;
+let _prChartPiePersona   = null;
+let _prChartPieCuenta    = null;
+let _prChartData         = null;
+
+// Paleta de colores para tortas
+const _PR_PALETTE = ['#7f56d9','#ff9500','#34c759','#4f6ef7','#ef4444','#06b6d4','#f59e0b','#10b981','#8b5cf6','#ec4899'];
+
+async function openPrestamosCharts() {
+  openModal('modal-prestamos-charts');
+  await renderPrestamosCharts();
+}
+
+async function renderPrestamosCharts(keepData = false) {
+  const desde     = document.getElementById('pr-chart-desde')?.value   || '';
+  const hasta     = document.getElementById('pr-chart-hasta')?.value   || '';
+  const personaId = document.getElementById('pr-chart-persona')?.value || '';
+  const agrup     = document.getElementById('pr-chart-agrup')?.value   || 'mes';
+
+  if (!keepData || !_prChartData) {
+    const params = new URLSearchParams();
+    if (desde)     params.set('desde', desde);
+    if (hasta)     params.set('hasta', hasta);
+    if (personaId) params.set('persona_id', personaId);
+    try {
+      const res    = await fetch('/api/prestamos/cuotas/por-mes?' + params.toString());
+      _prChartData = await res.json();
+    } catch (_) { return; }
+
+    // Poblar select personas (primera vez)
+    const pSel = document.getElementById('pr-chart-persona');
+    if (pSel && _prChartData.personas && pSel.options.length <= 1) {
+      _prChartData.personas.forEach(p => {
+        const o = document.createElement('option');
+        o.value = p.id;
+        o.textContent = `${p.apellido||''}, ${p.nombre||''}`.trim().replace(/^,\s*/, '');
+        pSel.appendChild(o);
+      });
+    }
+  }
+
+  const rawRows = _prChartData?.rows || [];
+  const fmt   = n => '$ ' + n.toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const fmtK  = n => '$ ' + (n>=1000000 ? (n/1000000).toFixed(1)+'M' : n>=1000 ? (n/1000).toFixed(0)+'K' : n.toFixed(0));
+
+  // Agrupar client-side según agrupación seleccionada
+  const _prGroupKey = mes => {
+    if (agrup === 'trimestre') { const [y,m] = mes.split('-'); return `${y}-Q${Math.ceil(parseInt(m)/3)}`; }
+    if (agrup === 'año')       { return mes.substring(0,4); }
+    return mes;
+  };
+  const agrupMap = new Map();
+  rawRows.forEach(r => {
+    const k = _prGroupKey(r.mes);
+    if (!agrupMap.has(k)) agrupMap.set(k, { total:0, pagado:0, pendiente:0 });
+    const g = agrupMap.get(k);
+    g.total     += parseFloat(r.total)||0;
+    g.pagado    += parseFloat(r.pagado)||0;
+    g.pendiente += parseFloat(r.pendiente)||0;
+  });
+  const rows   = [...agrupMap.entries()].map(([k,v]) => ({ mes:k, ...v }));
+  const labels = rows.map(r => r.mes);
+  const totals = rows.map(r => r.total);
+  const pagados= rows.map(r => r.pagado);
+  const pends  = rows.map(r => r.pendiente);
+
+  // Chips resumen — fondo sólido para legibilidad
+  const sumEl = document.getElementById('pr-chart-summary');
+  if (sumEl) {
+    const tot = totals.reduce((a,b)=>a+b,0);
+    const pag = pagados.reduce((a,b)=>a+b,0);
+    const pen = pends.reduce((a,b)=>a+b,0);
+    sumEl.innerHTML = [
+      ['Total', fmt(tot), '#e07b00'],
+      ['Pagado', fmt(pag), '#16a34a'],
+      ['Pendiente', fmt(pen), '#7f56d9'],
+    ].map(([l,v,c]) => `<span style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:14px;background:${c};color:#fff;">${l}: ${v}</span>`).join('');
+  }
+
+  const showX   = document.getElementById('pr-chart-show-x')?.checked ?? true;
+  const showY   = document.getElementById('pr-chart-show-y')?.checked ?? true;
+  const showLbl = document.getElementById('pr-chart-show-labels')?.checked ?? false;
+  const cTotal  = document.getElementById('pr-chart-color-total')?.value      || '#ff9500';
+  const cPend   = document.getElementById('pr-chart-color-pendiente')?.value  || '#7f56d9';
+  const cPag    = document.getElementById('pr-chart-color-pagado')?.value     || '#34c759';
+  const cX      = document.getElementById('pr-chart-color-x')?.value  || '#555';
+  const cY      = document.getElementById('pr-chart-color-y')?.value  || '#555';
+
+  // Registrar plugin datalabels globalmente si no está registrado
+  if (window.ChartDataLabels && !Chart._prDatalabelsRegistered) {
+    Chart.register(ChartDataLabels);
+    Chart._prDatalabelsRegistered = true;
+  }
+
+  // ── Gráfico barras mes a mes ──────────────────────────────────────────────
+  const canvas = document.getElementById('chart-prestamos-mensual');
+  if (canvas && window.Chart) {
+    if (_prChartInstance) { _prChartInstance.destroy(); _prChartInstance = null; }
+    _prChartInstance = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          { label:'Total',     data:totals,  backgroundColor:cTotal, borderColor:'transparent', borderWidth:0, borderRadius:8, borderSkipped:false },
+          { label:'Pagado',    data:pagados, backgroundColor:cPag,   borderColor:'transparent', borderWidth:0, borderRadius:8, borderSkipped:false },
+          { label:'Pendiente', data:pends,   backgroundColor:cPend,  borderColor:'transparent', borderWidth:0, borderRadius:8, borderSkipped:false },
+        ]
+      },
+      options: {
+        responsive:true, maintainAspectRatio:false,
+        animation: { duration: 900, easing: 'easeInOutQuart' },
+        plugins: {
+          legend: { position:'bottom', labels: { font:{size:11,weight:'600'}, usePointStyle:true } },
+          datalabels: {
+            display: showLbl,
+            anchor: 'end', align: 'top', clip:false, clamp:true,
+            font: { size:9, weight:'700' },
+            color: ctx => [cTotal, cPag, cPend][ctx.datasetIndex],
+            formatter: v => v > 0 ? fmtK(v) : ''
+          },
+          tooltip: _chartTooltip()
+        },
+        scales: {
+          x: { grid:{ display:false }, ticks: { display:showX, color:cX, font:{size:11} } },
+          y: { grid: _chartGrid(), ticks: { display:showY, color:cY, font:{size:11}, callback: v => fmtK(v) } }
+        }
+      },
+      plugins: _makeChartPlugins(false, null)
+    });
+  }
+
+  // ── Tortas ────────────────────────────────────────────────────────────────
+  // Datos por persona desde el API (personas con su pendiente acumulado)
+  const personas = _prChartData?.personas || [];
+
+  // Para las tortas necesitamos los préstamos actuales — los pedimos
+  let prestamos = [];
+  try { prestamos = await fetch('/api/prestamos').then(r=>r.json()); } catch(_){}
+
+  // Distribución por persona (pendiente total)
+  const porPersona = {};
+  prestamos.forEach(p => {
+    if (p.estado === 'pagado' || p.estado === 'cancelado') return;
+    const nombre = [p.persona_apellido, p.persona_nombre].filter(Boolean).join(', ')
+      || p.nombre_prestatario || p.cuenta_alias || `Préstamo #${p.id}`;
+    const monto  = parseFloat(p.saldo_pendiente || p.capital || 0);
+    porPersona[nombre] = (porPersona[nombre] || 0) + monto;
+  });
+
+  // Distribución por banco/cuenta
+  const porBanco = {};
+  prestamos.forEach(p => {
+    if (p.estado === 'pagado' || p.estado === 'cancelado') return;
+    const banco = p.banco_nombre || p.cuenta_alias || 'Sin banco';
+    const monto = parseFloat(p.saldo_pendiente || p.capital || 0);
+    porBanco[banco] = (porBanco[banco] || 0) + monto;
+  });
+
+  const _makePie = (canvasId, dataObj, existingChart) => {
+    const cvs = document.getElementById(canvasId);
+    if (!cvs) return existingChart;
+    if (existingChart) { existingChart.destroy(); }
+    const keys = Object.keys(dataObj).sort((a,b) => dataObj[b]-dataObj[a]);
+    if (!keys.length) return existingChart;
+    return new Chart(cvs, {
+      type: 'doughnut',
+      data: {
+        labels: keys,
+        datasets: [{ data: keys.map(k=>dataObj[k]),
+          backgroundColor: keys.map((_,i) => _CHART_PALETTE[i % _CHART_PALETTE.length].top),
+          borderColor:     keys.map((_,i) => _CHART_PALETTE[i % _CHART_PALETTE.length].bot),
+          borderWidth: 2, hoverOffset: 20 }]
+      },
+      options: {
+        responsive:true, maintainAspectRatio:false,
+        animation: { duration: 900, easing: 'easeInOutQuart' },
+        plugins: {
+          legend: { position:'right', labels:{ font:{size:10,weight:'600'}, boxWidth:12, usePointStyle:true } },
+          datalabels: {
+            display: ctx => (ctx.dataset.data[ctx.dataIndex] / ctx.dataset.data.reduce((a,b)=>a+b,0)) > 0.04,
+            color:'#fff', font:{size:9,weight:'700'},
+            formatter: v => fmtK(v)
+          },
+          tooltip: _chartTooltip()
+        }
+      }
+    });
+  };
+
+  _prChartPiePersona = _makePie('chart-prestamos-pie-persona', porPersona, _prChartPiePersona);
+  _prChartPieCuenta  = _makePie('chart-prestamos-pie-cuenta',  porBanco,   _prChartPieCuenta);
+
+  // ── Gráfico de líneas ──
+  const linCvs = document.getElementById('chart-prestamos-lineas');
+  if (_prChartLineas) { _prChartLineas.destroy(); _prChartLineas = null; }
+  if (linCvs && labels.length) {
+    _prChartLineas = new Chart(linCvs, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label:'Total',     data:totals,  borderColor:cTotal, backgroundColor:cTotal+'22',
+            borderWidth:2.5, pointRadius:4, pointHoverRadius:7, tension:0.35, fill:false },
+          { label:'Pendiente', data:pends,   borderColor:cPend,  backgroundColor:cPend+'22',
+            borderWidth:2.5, pointRadius:4, pointHoverRadius:7, tension:0.35, fill:false },
+          { label:'Pagado',    data:pagados, borderColor:cPag,   backgroundColor:cPag+'22',
+            borderWidth:2,   pointRadius:3, pointHoverRadius:6, tension:0.35, fill:false },
+        ]
+      },
+      options: {
+        responsive:true, maintainAspectRatio:false,
+        animation:{ duration:900, easing:'easeInOutQuart' },
+        interaction:{ mode:'index', intersect:false },
+        plugins: {
+          legend:{ position:'bottom', labels:{ font:{size:11,weight:'600'}, usePointStyle:true, boxWidth:10 } },
+          datalabels:{ display:false },
+          tooltip:{ ..._chartTooltip(), callbacks:{ label: ctx=>`  ${ctx.dataset.label}: ${fmtK(ctx.parsed.y)}` } }
+        },
+        scales: {
+          x:{ grid:{ display:false }, ticks:{ color:cX, font:{size:10}, display:showX } },
+          y:{ grid:_chartGrid(), ticks:{ color:cY, font:{size:10}, callback:v=>fmtK(v), display:showY } }
+        }
+      }
+    });
+  }
+}
+
+function exportPrestamosChartXLS() {
+  const table = document.createElement('table');
+  const rows  = _prChartData?.rows || [];
+  table.innerHTML = '<thead><tr><th>Mes</th><th>Total</th><th>Pagado</th><th>Pendiente</th><th>Cuotas</th></tr></thead>'
+    + '<tbody>' + rows.map(r =>
+      `<tr><td>${r.mes}</td><td>${r.total}</td><td>${r.pagado}</td><td>${r.pendiente}</td><td>${r.cant_cuotas}</td></tr>`
+    ).join('') + '</tbody>';
+  if (!window.XLSX) return;
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.table_to_sheet(table), 'Cuotas');
+  XLSX.writeFile(wb, 'Prestamos_Graficos.xlsx');
+}
+
+function exportPrestamosChartWA() {
+  const rows = _prChartData?.rows || [];
+  if (!rows.length) return showAlert('Sin datos para compartir');
+  let txt = '*Gráficos — Préstamos*\n';
+  rows.forEach(r => {
+    txt += `\n📅 *${r.mes}*  Total: $ ${parseFloat(r.total).toLocaleString('es-AR',{minimumFractionDigits:2})}  Pend: $ ${parseFloat(r.pendiente).toLocaleString('es-AR',{minimumFractionDigits:2})}`;
+  });
+  openWhatsAppModal(null, 'Gráficos Préstamos', txt);
+}
+
+// ── CashFlow ─────────────────────────────────────────────────────────────────
+function openCashFlow() {
+  const now  = new Date();
+  const pad  = n => String(n).padStart(2,'0');
+  const y    = now.getFullYear();
+  const m    = now.getMonth() + 1;
+  const last = new Date(y, m, 0).getDate(); // último día del mes actual
+  document.getElementById('cf-desde').value = `${y}-${pad(m)}-${pad(now.getDate())}`;
+  document.getElementById('cf-hasta').value = `${y}-${pad(m)}-${pad(last)}`;
+  openModal('modal-cashflow');
+  loadCashFlow();
+}
+
+async function loadCashFlow() {
+  const desde = document.getElementById('cf-desde')?.value || '';
+  const hasta = document.getElementById('cf-hasta')?.value || '';
+
+  const empty = document.getElementById('cf-empty');
+  const thead = document.getElementById('cf-thead');
+  const tbody = document.getElementById('cf-tbody');
+
+  if (!desde || !hasta) {
+    if (empty) empty.style.display = '';
+    if (thead) thead.innerHTML = '';
+    if (tbody) tbody.innerHTML = '';
+    return;
+  }
+
+  let data = null;
+  try {
+    const res = await fetch(`/api/prestamos/cashflow?desde=${desde}&hasta=${hasta}`);
+    data = await res.json();
+  } catch(_) { return; }
+
+  const { fechas = [], bancos = [], pivot = {}, totales = {} } = data;
+
+  if (!bancos.length) {
+    if (empty) empty.style.display = '';
+    if (thead) thead.innerHTML = '';
+    if (tbody) tbody.innerHTML = '';
+    document.getElementById('cf-summary').innerHTML = '';
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+
+  const fmt  = n => n ? '$ ' + parseFloat(n).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2}) : '';
+  const fmtT = n => '$ ' + parseFloat(n||0).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const hoy  = new Date().toISOString().slice(0,10);
+
+  // Encabezado: Banco | [fecha1] | [fecha2] | ... | Total período | Resto
+  const fmtFecha = iso => { const [y,m,d] = iso.split('-'); return `${d}-${m}-${y}`; };
+  thead.innerHTML = `<tr>
+    <th>Banco / Cuenta</th>
+    ${fechas.map(f => `<th style="text-align:right;font-size:11px;${f < hoy ? 'color:#ef4444;' : ''}">${fmtFecha(f)}</th>`).join('')}
+    <th style="text-align:right;">Total período</th>
+    <th style="text-align:right;opacity:.6;" title="Vencimientos fuera del período">Resto</th>
+  </tr>`;
+
+  tbody.innerHTML = bancos.map((b, i) => {
+    const bData  = pivot[b] || {};
+    const rowTot = fechas.reduce((s, f) => s + (bData[f] || 0), 0);
+    const resto  = bData.__resto || 0;
+    const celdas = fechas.map(f => {
+      const v = bData[f] || 0;
+      return `<td style="text-align:right;font-variant-numeric:tabular-nums;${f < hoy && v > 0 ? 'color:#ef4444;font-weight:700;' : ''}">${fmt(v)}</td>`;
+    });
+    return `<tr class="${i%2===1?'row-alt':''}">
+      <td style="font-weight:600;">${b}</td>
+      ${celdas.join('')}
+      <td style="text-align:right;font-weight:700;font-variant-numeric:tabular-nums;">${fmtT(rowTot)}</td>
+      <td style="text-align:right;opacity:.6;font-variant-numeric:tabular-nums;">${fmt(resto)}</td>
+    </tr>`;
+  }).join('');
+
+  // Fila totales
+  const granTotal = fechas.reduce((s, f) => s + (totales[f] || 0), 0);
+  tbody.innerHTML += `<tr style="font-weight:800;border-top:2px solid var(--border-color);background:var(--bg-secondary);">
+    <td>TOTAL</td>
+    ${fechas.map(f => `<td style="text-align:right;font-variant-numeric:tabular-nums;">${fmtT(totales[f])}</td>`).join('')}
+    <td style="text-align:right;font-variant-numeric:tabular-nums;">${fmtT(granTotal)}</td>
+    <td style="text-align:right;opacity:.6;font-variant-numeric:tabular-nums;">${fmtT(totales.__resto)}</td>
+  </tr>`;
+
+  document.getElementById('cf-summary').innerHTML = [
+    ['Vencimientos en período', fmtT(granTotal), '#ef4444'],
+    ['Resto pendiente', fmtT(totales.__resto || 0), '#e07b00'],
+    ['Bancos/Cuentas', bancos.length + ' activos', '#4f6ef7'],
+  ].map(([l,v,c])=>`<span style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:14px;background:${c};color:#fff;">${l}: ${v}</span>`).join('');
+}
+
+function exportCashFlowXLS() {
+  const table = document.getElementById('cf-table');
+  if (!table || !window.XLSX) return;
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.table_to_sheet(table), 'CashFlow');
+  XLSX.writeFile(wb, 'CashFlow_Prestamos.xlsx');
+}
+
+function exportCashFlowWA() {
+  const rows = document.querySelectorAll('#cf-tbody tr:not(:last-child)');
+  if (!rows.length) return showAlert('Sin datos para compartir');
+  let txt = '*💧 Cash Flow — Vencimientos de Cuotas*\n';
+  rows.forEach(r => {
+    const cells = r.querySelectorAll('td');
+    if (cells.length >= 4)
+      txt += `\n📅 *${cells[0].textContent}*  Pend: ${cells[3].textContent.trim()}`;
+  });
+  openWhatsAppModal(null, 'CashFlow Préstamos', txt);
+}
+
 let _peajesParsed = []; // filas parseadas del pegado antes de confirmar
+
+// ══ ARCA / AFIP ══════════════════════════════════════════════════════════════
+
+let _arcaTab = 'emitidos';
+let _arcaContribs = [];
+let _allContribs = [];
+
+async function _loadArcaContribs() {
+  try {
+    const r = await fetch('/api/afip/contribuyentes');
+    _arcaContribs = (await r.json()).filter(c => c.activo);
+    const sel = document.getElementById('arca-contrib-sel');
+    if (!sel) return;
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">Todos los contribuyentes</option>' +
+      _arcaContribs.map(c => `<option value="${c.id}" data-cuit="${c.cuit}">${c.nombre}</option>`).join('');
+    if (prev) sel.value = prev;
+  } catch {}
+}
+
+function switchArcaTab(tab) {
+  _arcaTab = tab;
+  document.querySelectorAll('.arca-tab').forEach(b => b.classList.toggle('active', b.dataset.arcaTab === tab));
+  const isContribs = tab === 'contribuyentes';
+  const vComp = document.getElementById('arca-view-comprobantes');
+  const vCont = document.getElementById('arca-view-contribuyentes');
+  if (vComp) vComp.style.display = isContribs ? 'none' : '';
+  if (vCont) vCont.style.display = isContribs ? '' : 'none';
+  if (isContribs) {
+    loadContribuyentesTable();
+  } else {
+    const th = document.getElementById('arca-th-contraparte');
+    if (th) th.textContent = tab === 'emitidos' ? 'Receptor' : 'Emisor';
+    loadArca();
+  }
+}
+
+// ── Gestión de contribuyentes AFIP ───────────────────────────────────────────
+async function loadContribuyentesTable() {
+  const tbody = document.getElementById('contrib-table-body');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:20px;"><i class="fa-solid fa-spinner fa-spin"></i></td></tr>';
+  try {
+    const rows = await fetch('/api/afip/contribuyentes').then(r => r.json());
+    _allContribs = rows;
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-secondary);padding:24px;">Sin contribuyentes. Agregá uno con el botón de arriba.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(c => {
+      const certBadge = c.tiene_cert ? '<span class="badge badge-success"><i class="fa-solid fa-check"></i></span>' : '<span class="badge badge-danger"><i class="fa-solid fa-xmark"></i></span>';
+      const keyBadge  = c.tiene_key  ? '<span class="badge badge-success"><i class="fa-solid fa-check"></i></span>' : '<span class="badge badge-danger"><i class="fa-solid fa-xmark"></i></span>';
+      const vto = c.cert_vence ? formatDate(c.cert_vence) : '—';
+      const vtoColor = c.cert_vence && new Date(c.cert_vence) < new Date(Date.now() + 30*864e5) ? 'color:#c96a00;font-weight:700;' : '';
+      const ambBadge = c.production ? '<span class="badge badge-danger">Producción</span>' : '<span class="badge badge-info">Homologación</span>';
+      const actBadge = c.activo ? '<span class="badge badge-success">Activo</span>' : '<span class="badge badge-secondary">Inactivo</span>';
+      return `<tr data-id="${c.id}">
+        <td style="font-family:monospace;">${c.cuit}</td>
+        <td>${c.nombre}</td>
+        <td style="text-align:center;">${c.punto_venta}</td>
+        <td>${ambBadge}</td>
+        <td style="text-align:center;">${certBadge}</td>
+        <td style="text-align:center;">${keyBadge}</td>
+        <td style="${vtoColor}">${vto}</td>
+        <td>${actBadge}</td>
+        <td style="text-align:center;white-space:nowrap;">
+          <button class="tbl-action-btn" onclick="subirCertContrib(${c.id},'cert')" title="Subir certificado .crt"><i class="fa-solid fa-certificate"></i></button>
+          <button class="tbl-action-btn" onclick="subirCertContrib(${c.id},'key')"  title="Subir clave privada .key"><i class="fa-solid fa-key"></i></button>
+          <button class="tbl-action-btn tbl-btn-edit" onclick="editarContribuyente(${c.id})" title="Editar"><i class="fa-solid fa-pen"></i></button>
+          ${c.activo
+            ? `<button class="tbl-action-btn tbl-btn-del"  onclick="desactivarContrib(${c.id},'${c.nombre.replace(/'/g,"\\'")}',false)" title="Desactivar"><i class="fa-solid fa-ban"></i></button>`
+            : `<button class="tbl-action-btn tbl-btn-edit" onclick="desactivarContrib(${c.id},'${c.nombre.replace(/'/g,"\\'")}',true)"  title="Activar" style="color:#22c55e;"><i class="fa-solid fa-circle-check"></i></button>`
+          }
+        </td>
+      </tr>`;
+    }).join('');
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:#ef4444;padding:24px;">${e.message}</td></tr>`;
+  }
+}
+
+async function subirCertContrib(id, tipo) {
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = tipo === 'cert' ? '.crt,.pem' : '.key,.pem';
+  inp.onchange = async () => {
+    const file = inp.files[0];
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const r = await fetch(`/api/afip/contribuyentes/${id}/cert?tipo=${tipo}`, { method:'POST', body: fd });
+      const d = await r.json();
+      if (!r.ok) { showToast(d.message || 'Error', 'error'); return; }
+      const msg = tipo === 'cert'
+        ? `✓ Certificado cargado${d.cert_vence ? ' · vence ' + formatDate(d.cert_vence) : ''}`
+        : '✓ Clave privada cargada';
+      showToast(msg, 'success');
+      loadContribuyentesTable();
+      _loadArcaContribs();
+    } catch(e) { showToast(e.message, 'error'); }
+  };
+  inp.click();
+}
+
+async function desactivarContrib(id, nombre, activar = false) {
+  const accion = activar ? 'Activar' : 'Desactivar';
+  const ok = await showConfirm(`¿${accion} contribuyente "${nombre}"?`);
+  if (!ok) return;
+  let r;
+  if (activar) {
+    const rows = await fetch('/api/afip/contribuyentes').then(x => x.json());
+    const c = rows.find(x => String(x.id) === String(id));
+    if (!c) return;
+    r = await fetch(`/api/afip/contribuyentes/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nombre: c.nombre, punto_venta: c.punto_venta, production: c.production, notas: c.notas, activo: 1 }),
+    });
+  } else {
+    r = await fetch(`/api/afip/contribuyentes/${id}`, { method: 'DELETE' });
+  }
+  if (r.ok) {
+    showToast(`Contribuyente ${activar ? 'activado' : 'desactivado'}`, 'success');
+    loadContribuyentesTable();
+    _loadArcaContribs();
+  }
+}
+
+function editarContribuyente(id) {
+  const c = _allContribs.find(x => String(x.id) === String(id));
+  if (!c) { showToast('Contribuyente no encontrado (id=' + id + ')', 'error'); return; }
+  abrirModalContribuyente(c);
+}
+
+function abrirModalContribuyente(c = null) {
+  const titulo = c ? 'Editar contribuyente' : 'Nuevo contribuyente';
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  const ambBadge = c?.production
+    ? `<span class="badge badge-danger" style="font-size:11px;">Producción</span>`
+    : `<span class="badge badge-info"   style="font-size:11px;">Homologación</span>`;
+  modal.innerHTML = `
+    <div class="modal-card modal-crud" style="max-width:520px;width:100%;">
+      <div class="modal-header">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <i class="fa-solid fa-building-columns" style="font-size:18px;color:var(--accent-color);"></i>
+          <div>
+            <h2 style="margin:0;font-size:16px;">${titulo}</h2>
+            ${c ? `<div style="font-size:11px;color:var(--text-secondary);margin-top:1px;">${c.cuit} ${ambBadge}</div>` : ''}
+          </div>
+        </div>
+        <button class="btn-close" onclick="this.closest('.modal-overlay').remove()"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body" style="padding:20px 24px;">
+        <div style="display:grid;gap:16px;">
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div>
+              <label class="form-label">CUIT <span style="color:var(--color-error);">*</span></label>
+              <input id="_mc-cuit" class="form-control" placeholder="20238166277" value="${c?.cuit||''}" ${c?'readonly':''}>
+            </div>
+            <div>
+              <label class="form-label">Punto de venta</label>
+              <input id="_mc-pv" class="form-control" type="number" min="1" value="${c?.punto_venta||1}">
+            </div>
+          </div>
+
+          <div>
+            <label class="form-label">Nombre / Razón social <span style="color:var(--color-error);">*</span></label>
+            <input id="_mc-nombre" class="form-control" placeholder="Ej: Juan Pérez" value="${c?.nombre||''}">
+          </div>
+
+          <div>
+            <label class="form-label">Ambiente</label>
+            <select id="_mc-prod" class="form-control">
+              <option value="0" ${!c?.production?'selected':''}>🧪 Homologación (pruebas)</option>
+              <option value="1" ${c?.production?'selected':''}>🚀 Producción</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="form-label">Notas</label>
+            <input id="_mc-notas" class="form-control" placeholder="Alias, observaciones…" value="${c?.notas||''}">
+          </div>
+
+          <div>
+            <label class="form-label" style="display:flex;align-items:center;gap:6px;">
+              <i class="fa-solid fa-file-invoice" style="color:var(--text-secondary);font-size:11px;"></i>
+              Concepto base de facturación
+              <span style="font-size:10px;color:var(--text-secondary);font-weight:400;">(se agrega el N° de operación automáticamente)</span>
+            </label>
+            <input id="_mc-concepto" class="form-control" placeholder="Ej: Alquiler vehículo" value="${c?.concepto_base||''}">
+          </div>
+
+          <div style="border-top:1px solid var(--border-color);padding-top:14px;">
+            <label class="form-label" style="display:flex;align-items:center;gap:6px;">
+              <i class="fa-solid fa-link" style="color:var(--text-secondary);font-size:11px;"></i>
+              URL WSCDC
+              <span style="font-size:10px;color:var(--text-secondary);font-weight:400;">(opcional — sobreescribe el default)</span>
+            </label>
+            <input id="_mc-wscdc" class="form-control" style="font-size:12px;font-family:monospace;"
+              placeholder="https://servicios1.afip.gov.ar/WSCDC/service.asmx?WSDL"
+              value="${c?.wscdc_url||''}">
+          </div>
+
+        </div>
+      </div>
+      <div class="modal-footer" style="padding:16px 24px;margin-top:0;">
+        <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancelar</button>
+        <button class="btn btn-primary" id="_mc-save"><i class="fa-solid fa-floppy-disk"></i> Guardar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  requestAnimationFrame(() => modal.classList.add('active'));
+
+  modal.querySelector('#_mc-save').onclick = async () => {
+    const body = {
+      cuit:        modal.querySelector('#_mc-cuit').value.trim(),
+      nombre:      modal.querySelector('#_mc-nombre').value.trim(),
+      punto_venta: parseInt(modal.querySelector('#_mc-pv').value) || 1,
+      production:  modal.querySelector('#_mc-prod').value === '1' ? 1 : 0,
+      notas:         modal.querySelector('#_mc-notas').value.trim(),
+      concepto_base: modal.querySelector('#_mc-concepto').value.trim() || null,
+      wscdc_url:     modal.querySelector('#_mc-wscdc').value.trim() || null,
+    };
+    if (!body.cuit || !body.nombre) { showToast('CUIT y nombre son obligatorios', 'error'); return; }
+    const url    = c ? `/api/afip/contribuyentes/${c.id}` : '/api/afip/contribuyentes';
+    const method = c ? 'PUT' : 'POST';
+    try {
+      const r = await fetch(url, { method, headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      const d = await r.json();
+      if (!r.ok) { showToast(d.message || 'Error', 'error'); return; }
+      showToast(c ? '✓ Contribuyente actualizado' : '✓ Contribuyente creado', 'success');
+      modal.remove();
+      loadContribuyentesTable();
+      _loadArcaContribs();
+    } catch(e) { showToast(e.message, 'error'); }
+  };
+}
+
+async function loadArca(filtrar = false) {
+  _loadArcaContribs();
+  // Defaults de fecha: último mes
+  const desdeEl = document.getElementById('arca-desde');
+  const hastaEl = document.getElementById('arca-hasta');
+  if (!desdeEl.value) {
+    const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1);
+    desdeEl.value = d.toISOString().split('T')[0];
+  }
+  if (!hastaEl.value) hastaEl.value = new Date().toISOString().split('T')[0];
+
+  const direccion = _arcaTab === 'emitidos' ? 'emitido' : 'recibido';
+  const params = new URLSearchParams({
+    direccion,
+    desde: desdeEl.value,
+    hasta: hastaEl.value,
+  });
+  const tipo      = document.getElementById('arca-tipo')?.value;
+  const contribId = document.getElementById('arca-contrib-sel')?.value;
+  if (tipo)      params.set('tipo', tipo);
+  if (contribId) params.set('cuit_emisor', document.getElementById('arca-contrib-sel').selectedOptions[0]?.dataset.cuit || '');
+
+  const tbody = document.getElementById('arca-table-body');
+  if (tbody) tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:24px;"><i class="fa-solid fa-spinner fa-spin"></i> Cargando…</td></tr>';
+
+  try {
+    const rows = await fetch('/api/arca/comprobantes?' + params).then(r => r.json());
+    if (!Array.isArray(rows)) throw new Error(rows.message || 'Error');
+
+    let total = 0, iva = 0;
+    tbody.innerHTML = rows.length === 0
+      ? '<tr><td colspan="12" style="text-align:center;color:var(--text-secondary);padding:24px;">Sin comprobantes para el período. Usá <strong>Sincronizar AFIP</strong> para traer novedades.</td></tr>'
+      : rows.map(r => {
+          total += parseFloat(r.importe_total || 0);
+          iva   += parseFloat(r.importe_iva   || 0);
+          const contraparte = r.razon_social || (direccion === 'emitido' ? r.cuit_receptor : r.cuit_emisor) || '—';
+          const nro = `${String(r.pto_venta).padStart(5,'0')}-${String(r.nro_comprobante).padStart(8,'0')}`;
+          const caeVto  = r.cae_vto       ? formatDate(r.cae_vto)       : '—';
+          const vtoPago = r.fecha_vto_pago ? formatDate(r.fecha_vto_pago) : '—';
+          const estadoBadge = r.estado === 'A'
+            ? '<span class="badge badge-success">Activo</span>'
+            : `<span class="badge badge-warning">${r.estado}</span>`;
+          const pdfBtn = r.pdf_url
+            ? `<button class="tbl-action-btn tbl-btn-factura-pdf" onclick="openDocViewer('${r.pdf_url}','${r.desc_tipo} ${nro}',true)" title="Ver PDF"><i class="fa-solid fa-file-pdf"></i></button>`
+            : `<button class="tbl-action-btn tbl-btn-clip" onclick="adjuntarArcaPdf(${r.id})" title="Adjuntar PDF"><i class="fa-solid fa-paperclip"></i></button>`;
+          const texto = `*${r.desc_tipo} ${nro}*\nFecha: ${formatDate(r.fecha_cbte)}\n${contraparte}\nTotal: ${formatCurrency(r.importe_total)}\nCAE: ${r.cae||'—'} (vto ${caeVto})`;
+          return `<tr data-id="${r.id}">
+            <td>${formatDate(r.fecha_cbte)}</td>
+            <td>${r.desc_tipo || r.codigo_tipo}</td>
+            <td style="font-family:monospace;">${nro}</td>
+            <td>${contraparte}</td>
+            <td><strong>${formatCurrency(r.importe_total)}</strong></td>
+            <td>${formatCurrency(r.importe_iva)}</td>
+            <td>${vtoPago}</td>
+            <td style="font-family:monospace;font-size:11px;">${r.cae || '—'}</td>
+            <td>${caeVto}</td>
+            <td>${estadoBadge}</td>
+            <td style="text-align:center;">${pdfBtn}</td>
+            <td style="text-align:center;white-space:nowrap;">
+              <button class="tbl-action-btn tbl-btn-wa" onclick="enviarArcaWA(${JSON.stringify(texto).replace(/'/g,'&apos;')})" title="Enviar por WhatsApp"><i class="fa-brands fa-whatsapp"></i></button>
+            </td>
+          </tr>`;
+        }).join('');
+
+    const totRow = document.getElementById('arca-totals-row');
+    if (totRow) totRow.style.display = 'flex';
+    const elCount = document.getElementById('arca-badge-count');
+    const elTotal = document.getElementById('arca-badge-total');
+    const elIva   = document.getElementById('arca-badge-iva');
+    if (elCount) elCount.textContent = rows.length;
+    if (elTotal) animateCounter(elTotal, total, v => formatCurrency(v));
+    if (elIva)   animateCounter(elIva,   iva,   v => formatCurrency(v));
+
+    staggerTableRows(tbody);
+    injectExportBar('table-arca', 'ARCA-Comprobantes');
+    _loadArcaSyncInfo();
+  } catch(e) {
+    if (tbody) tbody.innerHTML = `<tr><td colspan="12" style="text-align:center;color:#ef4444;padding:24px;">${e.message}</td></tr>`;
+  }
+}
+
+function adjuntarArcaPdf(id) {
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = 'application/pdf';
+  inp.onchange = async () => {
+    const file = inp.files[0];
+    if (!file) return;
+    const fd = new FormData(); fd.append('pdf', file);
+    try {
+      const res  = await fetch(`/api/arca/comprobantes/${id}/pdf`, { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.message || 'Error', 'error'); return; }
+      showToast('✓ PDF vinculado', 'success');
+      loadArca(true);
+    } catch(e) { showToast('Error: ' + e.message, 'error'); }
+  };
+  inp.click();
+}
+
+function enviarArcaWA(texto) {
+  // Abre el selector de destinatario WA reutilizando el panel existente
+  if (typeof openWAComposer === 'function') {
+    openWAComposer(texto);
+  } else {
+    // Fallback: copiar al portapapeles
+    navigator.clipboard.writeText(texto).then(() => showToast('Texto copiado al portapapeles', 'success'));
+  }
+}
+
+async function _loadArcaSyncInfo() {
+  try {
+    const info = await fetch('/api/arca/sync-info').then(r => r.json());
+    const el = document.getElementById('arca-sync-info');
+    if (!el) return;
+    if (info.last_sync) {
+      const d = new Date(info.last_sync);
+      el.innerHTML = `<i class="fa-solid fa-circle-check" style="color:#22c55e"></i> Última sync: ${d.toLocaleString('es-AR')} — datos hasta ${formatDate(info.last_fecha)}`;
+    } else {
+      el.innerHTML = '<i class="fa-solid fa-circle-info" style="color:#888"></i> Sin sincronizaciones previas.';
+    }
+  } catch {}
+}
+
+async function syncArca() {
+  const btn = document.getElementById('btn-arca-sync');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Sincronizando…'; }
+  try {
+    const desde       = document.getElementById('arca-desde')?.value || '';
+    const hasta       = document.getElementById('arca-hasta')?.value || '';
+    const contribId   = document.getElementById('arca-contrib-sel')?.value || '';
+    const body        = { direccion: 'ambos' };
+    if (desde)     body.desde = desde;
+    if (hasta)     body.hasta = hasta;
+    if (contribId) body.contribuyente_id = contribId;
+
+    const res  = await fetch('/api/arca/sync', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const data = await res.json();
+    if (!res.ok) { showToast(data.message || 'Error al sincronizar', 'error'); return; }
+    showToast(`✓ Sync completa — ${data.nuevos} comprobante(s) nuevo(s) (${data.desde} → ${data.hasta})`, 'success');
+    loadArca();
+  } catch(e) { showToast('Error: ' + e.message, 'error'); }
+  finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-rotate"></i> Sincronizar AFIP'; }
+  }
+}
+
+function clearArcaFilters() {
+  const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1);
+  const desde = document.getElementById('arca-desde');
+  const hasta  = document.getElementById('arca-hasta');
+  if (desde) desde.value = d.toISOString().split('T')[0];
+  if (hasta)  hasta.value = new Date().toISOString().split('T')[0];
+  const tipo   = document.getElementById('arca-tipo');
+  const contrib = document.getElementById('arca-contrib-sel');
+  const search  = document.getElementById('arca-search-input');
+  if (tipo)    tipo.value    = '';
+  if (contrib) contrib.value = '';
+  if (search)  search.value  = '';
+  loadArca(true);
+}
+
+function filterArcaTable(q) {
+  const rows = document.querySelectorAll('#arca-table-body tr');
+  const term = q.toLowerCase();
+  rows.forEach(r => { r.style.display = r.textContent.toLowerCase().includes(term) ? '' : 'none'; });
+}
+
+// ══ Fin ARCA ══════════════════════════════════════════════════════════════════
 
 async function loadPeajes() {
   try {
@@ -15676,8 +18004,14 @@ async function loadPeajes() {
 
     const total = list.reduce((s, r) => s + parseFloat(r.importe || 0), 0);
     const badge = document.getElementById('peajes-total-badge');
-    if (badge) badge.textContent = list.length ? `Total: ${formatCurrency(total)} (${list.length} registros)` : '';
+    if (badge) {
+      if (list.length) animateCounter(badge, total, v => `${formatCurrency(v)} (${list.length})`);
+      else badge.textContent = '';
+    }
+    const peajesRow = document.getElementById('peajes-totals-row');
+    if (peajesRow) peajesRow.style.display = list.length ? '' : 'none';
 
+    staggerTableRows(tbody);
     _populatePeajesPatenteFilter(list);
     _populatePeajesChoferFilter(list);
     injectExportBar('table-peajes', 'Peajes');
@@ -15769,6 +18103,35 @@ function openPeajesPaste() {
   document.getElementById('btn-peajes-save').style.display = 'none';
   _peajesParsed = [];
   openModal('modal-peajes-paste');
+}
+
+async function peajesMostrarConfirmPegar() {
+  // Si el permiso ya fue concedido, pegar directo sin overlay
+  try {
+    const text = await navigator.clipboard.readText();
+    const ta = document.getElementById('peajes-paste-input');
+    ta.value = text;
+    ta.dispatchEvent(new Event('input'));
+    ta.focus();
+    return;
+  } catch(_) {
+    // Permiso no concedido aún → mostrar overlay con trampa Ctrl+V
+  }
+  const overlay = document.getElementById('peajes-confirm-pegar');
+  overlay.style.display = 'flex';
+  document.getElementById('peajes-btn-permitir').onclick = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      overlay.style.display = 'none';
+      const ta = document.getElementById('peajes-paste-input');
+      ta.value = text;
+      ta.dispatchEvent(new Event('input'));
+      ta.focus();
+    } catch(_) {
+      showAlert('Acceso al portapapeles denegado. Habilitalo en la configuración del navegador.');
+    }
+  };
+  setTimeout(() => document.getElementById('peajes-btn-permitir')?.focus(), 50);
 }
 
 function parsePeajesPaste() {
@@ -16804,12 +19167,36 @@ async function waClearCacheAndRestart() {
 // ── WhatsApp: Broadcast a grupos ─────────────────────────────────────────────
 
 let _waGroups = [];
+let _waGroupsLoading = false;
 
 async function openWABroadcast(defaultMsg = '') {
   document.getElementById('broadcast-msg').value = defaultMsg;
   document.getElementById('broadcast-status').textContent = '';
+  bcSwitchTab('grupos');
   openModal('modal-wa-broadcast');
   await loadWAGroups();
+}
+
+function bcSwitchTab(tab) {
+  const tabs = ['grupos', 'recordatorios'];
+  tabs.forEach(t => {
+    const btn   = document.getElementById(`bc-tab-${t}`);
+    const panel = document.getElementById(`bc-panel-${t}`);
+    const active = t === tab;
+    if (btn) {
+      btn.style.color       = active ? '#128c7e' : 'var(--text-secondary)';
+      btn.style.borderBottom = active ? '2px solid #128c7e' : '2px solid transparent';
+    }
+    if (panel) panel.style.display = active ? 'flex' : 'none';
+  });
+  if (tab === 'recordatorios') {
+    recOnTipo();
+    loadRecordatorios();
+    // Presetear fecha/hora a 1h desde ahora
+    const now = new Date(Date.now() + 3600000 - new Date().getTimezoneOffset()*60000);
+    const iso  = now.toISOString().substring(0,16);
+    const fdt = document.getElementById('rec-datetime'); if (fdt) fdt.value = iso;
+  }
 }
 
 function _extractPatente(groupName) {
@@ -16831,27 +19218,34 @@ function waBroadcastShowHidden() {
 }
 
 async function loadWAGroups() {
+  if (_waGroupsLoading) return;
+  _waGroupsLoading = true;
   const list = document.getElementById('broadcast-groups-list');
-  list.innerHTML = '<span style="color:var(--text-secondary);font-size:13px;padding:8px;"><i class="fa-solid fa-spinner fa-spin"></i> Cargando grupos...</span>';
+  if (list) list.innerHTML = '<span style="color:var(--text-secondary);font-size:13px;padding:8px;"><i class="fa-solid fa-spinner fa-spin"></i> Cargando grupos...</span>';
   try {
-    const res = await fetch('/api/whatsapp/groups');
+    const forceRefresh = _waGroups.length === 0;
+    const res = await fetch('/api/whatsapp/groups' + (forceRefresh ? '?refresh=1' : ''));
     if (!res.ok) throw new Error((await res.json()).message);
     _waGroups = await res.json();
     _waGroups.forEach(g => { g.patente = _extractPatente(g.name); });
 
+    // Filtrar grupos sin nombre (evita error localeCompare)
+    _waGroups = _waGroups.filter(g => g && g.name);
+
     const hidden = _waHiddenGroups();
     const visible = _waGroups.filter(g => !hidden.includes(g.id));
+    const visibleFiltered = visible; // ya filtrados arriba
 
     // Mostrar botón de restaurar ocultos si hay alguno
     const restBtn = document.getElementById('broadcast-show-hidden-btn');
     if (restBtn) restBtn.style.display = hidden.length ? '' : 'none';
 
-    if (!visible.length) {
+    if (!visibleFiltered.length) {
       list.innerHTML = '<span style="color:var(--text-secondary);font-size:13px;padding:8px;">No hay grupos disponibles</span>';
       return;
     }
 
-    list.innerHTML = visible.map((g, i) => {
+    list.innerHTML = visibleFiltered.map((g, i) => {
       const globalIdx = _waGroups.indexOf(g);
       const isFlota = !!g.patente;
       return `
@@ -16866,12 +19260,223 @@ async function loadWAGroups() {
       </div>`;
     }).join('');
   } catch(e) {
-    list.innerHTML = `<span style="color:var(--color-error);font-size:13px;padding:8px;">${e.message}</span>`;
+    if (list) list.innerHTML = `<span style="color:var(--color-error);font-size:13px;padding:8px;">${e.message} <button onclick="loadWAGroups()" style="border:none;background:none;color:#128c7e;cursor:pointer;font-size:12px;text-decoration:underline;">Reintentar</button></span>`;
+  } finally {
+    _waGroupsLoading = false;
   }
 }
 
 function waBroadcastHideGroup(chatId) {
   _waHideGroup(chatId);
+}
+
+// ── Recordatorios ────────────────────────────────────────────────────────────
+
+let _recChoferes = [];
+
+async function recOnTipo() {
+  const tipo  = document.querySelector('input[name="rec-tipo"]:checked')?.value || 'grupos';
+  const wrap  = document.getElementById('rec-dest-wrap');
+  if (!wrap) return;
+
+  // Estilos de labels
+  ['grupos','choferes'].forEach(t => {
+    const lbl = document.getElementById(`rec-tipo-label-${t}`);
+    if (lbl) lbl.style.borderColor = t === tipo ? '#128c7e' : 'var(--border-color)';
+  });
+
+  const itemStyle = `display:flex;align-items:center;gap:7px;padding:5px 7px;border-radius:6px;cursor:pointer;font-size:12px;overflow:hidden;`;
+
+  if (tipo === 'grupos') {
+    if (!_waGroups.length) {
+      wrap.innerHTML = '<span style="font-size:12px;color:var(--text-secondary);padding:4px;">Cargando grupos...</span>';
+      await loadWAGroups();
+    }
+    const hidden = _waHiddenGroups();
+    const items  = _waGroups.filter(g => !hidden.includes(g.id));
+    wrap.innerHTML = items.length
+      ? items.map(g => `
+          <label style="${itemStyle}" onmouseover="this.style.background='var(--hover-bg)'" onmouseout="this.style.background=''">
+            <input type="checkbox" data-rec-chatid="${g.id}" data-rec-label="${(g.name||'').replace(/"/g,'')}" data-rec-patente="${g.patente||''}" ${g.patente ? 'checked' : ''} style="accent-color:#128c7e;width:13px;height:13px;flex-shrink:0;">
+            <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${g.name||''}">${g.name||''}</span>
+          </label>`).join('')
+      : `<span style="font-size:12px;color:var(--text-secondary);padding:4px;">Sin grupos.
+          ${hidden.length ? `<button onclick="localStorage.removeItem('wa_hidden_groups');recOnTipo()" style="border:none;background:none;color:#128c7e;cursor:pointer;font-size:12px;padding:0 4px;text-decoration:underline;"><i class='fa-solid fa-eye'></i> Restaurar ocultos</button>` : ''}
+          <button onclick="recOnTipo()" style="border:none;background:none;color:#128c7e;cursor:pointer;font-size:12px;padding:0;text-decoration:underline;">Reintentar</button>
+        </span>`;
+  } else {
+    try {
+      if (!_recChoferes.length) {
+        const r = await fetch('/api/choferes');
+        _recChoferes = await r.json();
+      }
+      wrap.innerHTML = _recChoferes.filter(c => c.telefono).map(c => `
+        <label style="${itemStyle}" onmouseover="this.style.background='var(--hover-bg)'" onmouseout="this.style.background=''">
+          <input type="checkbox" data-rec-chatid="549${c.telefono}@c.us" data-rec-label="${(c.nombre||'').replace(/"/g,'')}" data-rec-patente="" checked style="accent-color:#128c7e;width:13px;height:13px;flex-shrink:0;">
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${c.nombre||''}</span>
+        </label>`).join('') ||
+        '<span style="font-size:12px;color:var(--text-secondary);padding:4px;grid-column:1/-1;">No hay choferes con teléfono cargado.</span>';
+    } catch(e) {
+      wrap.innerHTML = `<span style="font-size:12px;color:var(--color-error);padding:4px;grid-column:1/-1;">Error al cargar choferes</span>`;
+    }
+  }
+}
+
+async function guardarRecordatorio(editId) {
+  const mensaje = document.getElementById('rec-mensaje').value.trim();
+  const dt = document.getElementById('rec-datetime').value;
+  if (!mensaje) { showToast('Escribí un mensaje', 'warning'); return; }
+  if (!dt) { showToast('Elegí fecha y hora', 'warning'); return; }
+
+  const dests = [...document.querySelectorAll('#rec-dest-wrap input[type=checkbox]:checked')]
+    .map(cb => ({ chatId: cb.dataset.recChatid, label: cb.dataset.recLabel, patente: cb.dataset.recPatente || null }));
+  if (!dests.length) { showToast('Seleccioná al menos un destinatario', 'warning'); return; }
+
+  const tipo       = document.querySelector('input[name="rec-tipo"]:checked')?.value || 'grupos';
+  const repeticion = document.getElementById('rec-repeticion')?.value || 'none';
+  const fecha_hora = dt.replace('T', ' ') + ':00';
+  const isEdit     = !!editId;
+
+  try {
+    const res = await fetch(isEdit ? `/api/wa/programados/${editId}` : '/api/wa/programados', {
+      method: isEdit ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mensaje, destinatarios_tipo: tipo, destinatarios: dests, fecha_hora, repeticion })
+    });
+    if (!res.ok) throw new Error((await res.json()).message);
+    showToast(isEdit ? '✓ Recordatorio actualizado' : '✓ Recordatorio programado', 'success');
+    document.getElementById('rec-mensaje').value = '';
+    // Restaurar botón a modo "Programar"
+    const btn = document.getElementById('rec-programar-btn');
+    if (btn) { btn.innerHTML = '<i class="fa-solid fa-paper-plane"></i> Programar'; btn.onclick = () => guardarRecordatorio(); }
+    loadRecordatorios();
+  } catch(e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+async function loadRecordatorios() {
+  const lista = document.getElementById('rec-lista');
+  if (!lista) return;
+  try {
+    const res  = await fetch('/api/wa/programados');
+    const rows = await res.json();
+    if (!rows.length) {
+      lista.innerHTML = '<span style="font-size:12px;color:var(--text-secondary);">No hay mensajes programados.</span>';
+      return;
+    }
+    const estadoBadge = {
+      pendiente: 'background:#fef3c7;color:#92400e;',
+      enviado:   'background:#d1fae5;color:#065f46;',
+      error:     'background:#fee2e2;color:#991b1b;',
+    };
+    const repLabel = { none:'Sin repetir', daily:'Diaria', weekly:'Semanal', monthly:'Mensual' };
+    // Guardar rows para editarRecordatorio()
+    window._recProgramados = rows;
+    lista.innerHTML = rows.map(r => {
+      const dests  = typeof r.destinatarios === 'string' ? JSON.parse(r.destinatarios) : r.destinatarios;
+      const fh     = r.fecha_hora ? new Date(r.fecha_hora).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}) : '-';
+      const eStyle = estadoBadge[r.estado] || estadoBadge.pendiente;
+      const rep    = r.repeticion && r.repeticion !== 'none'
+        ? `<span style="font-size:11px;color:#7c3aed;background:rgba(124,58,237,.1);padding:2px 7px;border-radius:10px;"><i class="fa-solid fa-rotate"></i> ${repLabel[r.repeticion]||r.repeticion}</span>` : '';
+      const destNames = dests.map(d => d.label || d.chatId).join(', ');
+      return `
+        <div id="rec-card-${r.id}" style="border:1px solid var(--border-color);border-radius:8px;overflow:hidden;">
+          <!-- Cabecera clickeable -->
+          <div onclick="recToggleCard(${r.id})" style="padding:10px 12px;display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;">
+            <i id="rec-chevron-${r.id}" class="fa-solid fa-chevron-right" style="font-size:11px;color:var(--text-secondary);transition:transform .2s;flex-shrink:0;"></i>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.mensaje.substring(0,70)}${r.mensaje.length>70?'…':''}</div>
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:3px;">
+                <span style="font-size:11px;padding:1px 7px;border-radius:10px;font-weight:700;${eStyle}">${r.estado}</span>
+                <span style="font-size:11px;color:var(--text-secondary);"><i class="fa-solid fa-clock"></i> ${fh}</span>
+                <span style="font-size:11px;color:var(--text-secondary);"><i class="fa-solid fa-users"></i> ${dests.length}</span>
+                ${rep}
+              </div>
+            </div>
+            <div style="display:flex;gap:4px;flex-shrink:0;" onclick="event.stopPropagation()">
+              <button onclick="editarRecordatorio(${r.id})" title="Editar" style="background:none;border:none;cursor:pointer;color:var(--accent-color);font-size:13px;padding:3px 5px;border-radius:5px;"><i class="fa-solid fa-pen"></i></button>
+              <button onclick="eliminarRecordatorio(${r.id})" title="Eliminar" style="background:none;border:none;cursor:pointer;color:var(--color-error);font-size:13px;padding:3px 5px;border-radius:5px;"><i class="fa-solid fa-trash"></i></button>
+            </div>
+          </div>
+          <!-- Panel expandido -->
+          <div id="rec-detail-${r.id}" style="display:none;border-top:1px solid var(--border-color);padding:10px 12px;display:none;flex-direction:column;gap:8px;background:var(--bg-secondary);">
+            <div>
+              <div style="font-size:10px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px;">Mensaje completo</div>
+              <div style="font-size:13px;white-space:pre-wrap;background:var(--bg-primary);border:1px solid var(--border-color);border-radius:6px;padding:8px 10px;line-height:1.5;">${r.mensaje.replace(/</g,'&lt;')}</div>
+            </div>
+            <div>
+              <div style="font-size:10px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px;">Destinatarios (${dests.length})</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 6px;">
+                ${dests.map(d=>`<span style="font-size:12px;padding:2px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${d.label||''}">${d.label||d.chatId}</span>`).join('')}
+              </div>
+            </div>
+            ${r.error_msg ? `<div style="font-size:12px;color:var(--color-error);"><i class="fa-solid fa-triangle-exclamation"></i> ${r.error_msg}</div>` : ''}
+          </div>
+        </div>`;
+    }).join('');
+  } catch(e) {
+    lista.innerHTML = `<span style="font-size:12px;color:var(--color-error);">Error al cargar: ${e.message}</span>`;
+  }
+}
+
+function recToggleCard(id) {
+  const detail  = document.getElementById(`rec-detail-${id}`);
+  const chevron = document.getElementById(`rec-chevron-${id}`);
+  if (!detail) return;
+  const open = detail.style.display === 'flex';
+  detail.style.display  = open ? 'none' : 'flex';
+  if (chevron) chevron.style.transform = open ? '' : 'rotate(90deg)';
+}
+
+function editarRecordatorio(id) {
+  const r = (window._recProgramados || []).find(x => x.id === id);
+  if (!r) return;
+
+  // Precargar formulario arriba
+  const msgEl = document.getElementById('rec-mensaje');
+  if (msgEl) msgEl.value = r.mensaje;
+
+  const dtEl = document.getElementById('rec-datetime');
+  if (dtEl && r.fecha_hora) {
+    // Convertir a formato datetime-local (yyyy-MM-ddTHH:mm)
+    const d = new Date(r.fecha_hora);
+    const pad = n => String(n).padStart(2,'0');
+    dtEl.value = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  const repEl = document.getElementById('rec-repeticion');
+  if (repEl) repEl.value = r.repeticion || 'none';
+
+  // Marcar tipo y recargar destinatarios, luego marcar los que correspondan
+  const dests = typeof r.destinatarios === 'string' ? JSON.parse(r.destinatarios) : r.destinatarios;
+  const tipo = r.destinatarios_tipo || 'grupos';
+  const tipoRadio = document.querySelector(`input[name="rec-tipo"][value="${tipo}"]`);
+  if (tipoRadio) { tipoRadio.checked = true; }
+  recOnTipo().then(() => {
+    const ids = new Set(dests.map(d => d.chatId));
+    document.querySelectorAll('#rec-dest-wrap input[type=checkbox]').forEach(cb => {
+      cb.checked = ids.has(cb.dataset.recChatid);
+    });
+  });
+
+  // Cambiar botón a "Actualizar" y guardar id en edición
+  const btn = document.querySelector('button[onclick="guardarRecordatorio()"]');
+  if (btn) {
+    btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Actualizar';
+    btn.dataset.editId = id;
+    btn.onclick = () => guardarRecordatorio(id);
+  }
+
+  // Scroll al formulario
+  document.getElementById('rec-mensaje')?.scrollIntoView({ behavior:'smooth', block:'nearest' });
+}
+
+async function eliminarRecordatorio(id) {
+  if (!await showConfirm('¿Eliminar este recordatorio?')) return;
+  try {
+    await fetch(`/api/wa/programados/${id}`, { method: 'DELETE' });
+    showToast('Eliminado', 'info');
+    loadRecordatorios();
+  } catch(e) { showToast('Error', 'error'); }
 }
 
 function waBroadcastToggleAll(checked) {
@@ -16978,7 +19583,7 @@ function fvWaSetTipo(tipo) {
   } else {
     if (searchBlock) searchBlock.style.display = '';
     if (numInp) { numInp.value = ''; numInp.readOnly = true; }
-    const labels = { chofer: 'Chofer activo', usuario: 'Usuario del sistema', propietario: 'Propietario de vehículo' };
+    const labels = { chofer: 'Chofer activo', usuario: 'Usuario del sistema', propietario: 'Propietario de vehículo', contacto: 'Buscar chofer → contacto emergencia' };
     if (label) label.textContent = labels[tipo] || '';
     if (si)    si.value = '';
     fvWaHideDropdown();
@@ -16989,6 +19594,61 @@ function fvWaFilterCurrent(q) {
   const dd   = document.getElementById('fv-wa-chofer-dropdown');
   if (!dd) return;
   const term = q.toLowerCase().trim();
+  // Modo contacto: búsqueda en 2 pasos (chofer → contactos alt)
+  if (_fvWaTipo === 'contacto') {
+    const source  = _fvWaChoferes.filter(c => c.telefono_alt1 || c.telefono_alt2);
+    const matches = term
+      ? source.filter(c => `${c.nombre||''} ${c.apellido||''}`.toLowerCase().includes(term))
+      : source;
+    dd.innerHTML = '';
+    if (!matches.length) {
+      dd.innerHTML = '<div style="padding:8px 12px;font-size:12px;color:var(--text-secondary);">Sin resultados</div>';
+    } else {
+      matches.forEach(c => {
+        const nombre = `${c.nombre||''} ${c.apellido||''}`.trim();
+        const div = document.createElement('div');
+        div.style.cssText = 'padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--border-color);display:flex;align-items:center;gap:8px;';
+        div.innerHTML = `<i class="fa-solid fa-user" style="font-size:12px;color:var(--text-secondary);"></i><span style="font-size:13px;">${nombre}</span><span style="font-size:11px;color:var(--text-secondary);margin-left:auto;"><i class="fa-solid fa-chevron-right"></i></span>`;
+        div.onmouseover = () => div.style.background = 'var(--bg-hover,rgba(255,255,255,0.06))';
+        div.onmouseout  = () => div.style.background = '';
+        div.onmousedown = () => {
+          // Mostrar contactos del chofer seleccionado
+          const si = document.getElementById('fv-wa-chofer-search');
+          if (si) si.value = nombre;
+          dd.innerHTML = `<div style="padding:6px 10px;font-size:11px;font-weight:600;color:var(--text-secondary);border-bottom:1px solid var(--border-color);letter-spacing:.5px;">CONTACTOS DE ${nombre.toUpperCase()}</div>`;
+          const contactos = [];
+          if (c.telefono_alt1) contactos.push({ tel: c.telefono_alt1, vinculo: c.telefono_alt1_vinculo || 'Contacto 1' });
+          if (c.telefono_alt2) contactos.push({ tel: c.telefono_alt2, vinculo: c.telefono_alt2_vinculo || 'Contacto 2' });
+          if (!contactos.length) {
+            dd.innerHTML += '<div style="padding:8px 12px;font-size:12px;color:var(--text-secondary);">Sin contactos cargados</div>';
+          } else {
+            contactos.forEach(ct => {
+              const row = document.createElement('div');
+              row.style.cssText = 'padding:9px 12px;cursor:pointer;border-bottom:1px solid var(--border-color);display:flex;justify-content:space-between;align-items:center;';
+              row.innerHTML = `<span style="font-size:13px;">${nombre} <span style="color:var(--accent-color);font-weight:600;">— ${ct.vinculo}</span></span><span style="font-size:11px;color:var(--text-secondary);">${ct.tel}</span>`;
+              row.onmouseover = () => row.style.background = 'var(--bg-hover,rgba(255,255,255,0.06))';
+              row.onmouseout  = () => row.style.background = '';
+              row.onmousedown = () => {
+                const numInp = document.getElementById('fv-wa-numero');
+                const si2    = document.getElementById('fv-wa-chofer-search');
+                const phone  = ct.tel.replace(/\D/g,'');
+                if (numInp) { numInp.value = phone; numInp.readOnly = true; }
+                if (si2)    si2.value = `${nombre} — ${ct.vinculo} · ${ct.tel}`;
+                _fvWaRecipient = { tipo: 'contacto', id: c.id, nombre: `${nombre} — ${ct.vinculo}`, telefono: phone };
+                fvWaHideDropdown();
+              };
+              dd.appendChild(row);
+            });
+          }
+          dd.style.display = 'block';
+        };
+        dd.appendChild(div);
+      });
+    }
+    dd.style.display = 'block';
+    return;
+  }
+
   let list   = [];
   if      (_fvWaTipo === 'chofer')      list = _fvWaChoferes;
   else if (_fvWaTipo === 'usuario')     list = _fvWaUsuarios;

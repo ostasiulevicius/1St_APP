@@ -1,15 +1,68 @@
 /**
  * scraper.js — Verificación automática de multas por patente
- * Abre un navegador visible para que el usuario resuelva CAPTCHAs.
- * Usa IA para parsear los resultados independientemente del HTML.
+ * Modo AUTO: Obscura (headless, stealth) — sin Chrome, sin ventana.
+ * Modo MANUAL: Puppeteer visible — para CAPTCHAs que requieren intervención.
+ * Usa IA para parsear resultados cuando no hay extractor DOM directo.
  */
 'use strict';
 
-const puppeteer = require('puppeteer');
-const Anthropic  = require('@anthropic-ai/sdk');
-// Instanciar lazy para que dotenv ya haya cargado la key desde index.js
+const puppeteer     = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+puppeteer.use(StealthPlugin());
+const puppeteerCore = require('puppeteer-core');
+const { spawn }     = require('child_process');
+const Anthropic     = require('@anthropic-ai/sdk');
+
 let _aiClient = null;
 const client = { messages: { create: (...args) => { if (!_aiClient) _aiClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }); return _aiClient.messages.create(...args); } } };
+
+// ── Obscura server ────────────────────────────────────────────────────────────
+const OBSCURA_PORT = 9223;
+let _obscuraProc   = null;
+let _obscuraPid    = null;
+
+async function _startObscura() {
+  // Ya está corriendo
+  if (_obscuraProc && !_obscuraProc.killed) return true;
+
+  const bin = process.env.OBSCURA_BIN || 'obscura';
+  return new Promise(resolve => {
+    try {
+      const args = ['serve', '--port', String(OBSCURA_PORT), '--stealth', '--workers', '3'];
+      const proc = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      _obscuraProc = proc;
+      _obscuraPid  = proc.pid;
+
+      let resolved = false;
+      const done = (ok) => { if (!resolved) { resolved = true; resolve(ok); } };
+
+      // Obscura escribe en stderr cuando está listo
+      proc.stderr.on('data', d => {
+        const s = d.toString();
+        if (s.includes(String(OBSCURA_PORT)) || s.includes('Listening') || s.includes('listening')) done(true);
+      });
+      proc.on('error', () => done(false));
+      proc.on('exit',  () => { _obscuraProc = null; done(false); });
+
+      // Timeout generoso — primera vez V8 puede tardar
+      setTimeout(() => done(true), 5000);
+    } catch { resolve(false); }
+  });
+}
+
+async function _connectObscura() {
+  return puppeteerCore.connect({
+    browserWSEndpoint: `ws://127.0.0.1:${OBSCURA_PORT}/devtools/browser`,
+    defaultViewport: null,
+  });
+}
+
+function stopObscura() {
+  if (_obscuraProc && !_obscuraProc.killed) {
+    _obscuraProc.kill();
+    _obscuraProc = null;
+  }
+}
 
 // ── Jobs activos ──────────────────────────────────────────────────────────────
 const _jobs = new Map();
@@ -216,22 +269,66 @@ const SITE_CONFIG = {
 
   'multas.mda.gob.ar': {
     nombre: 'Avellaneda',
+    waitUntil: 'networkidle2',
+    renderDelay: 2000,
     captcha_selector: '.g-recaptcha, iframe[src*="recaptcha"], iframe[src*="hcaptcha"]',
     plate_fn: async (page, patente, send) => {
-      const ok = await _fillByLabel(page, patente, ['dominio', 'patente', 'placa']);
-      if (ok) return true;
+      // 1. Esperar a que Cloudflare Turnstile termine (desaparece el iframe de verificación)
+      send('waiting_cf', '⏳ Esperando verificación Cloudflare...');
+      await page.waitForFunction(
+        () => {
+          const cf = document.querySelector('iframe[src*="challenges.cloudflare"], .cf-turnstile iframe, #cf-turnstile iframe');
+          if (!cf) return true; // no hay Turnstile, ok
+          // Turnstile resuelto: el iframe desaparece o aparece el formulario real
+          const input = document.querySelector('input[type="text"], input[placeholder]');
+          return !!input;
+        },
+        { timeout: 60000, polling: 1000 }
+      ).catch(() => {});
+
+      await new Promise(r => setTimeout(r, 800));
+
+      // 2. Click en tab "Dominio" si existe (React tabs)
+      await page.evaluate(() => {
+        const btns = Array.from(document.querySelectorAll('button, [role="tab"], .tab, .btn'));
+        const domBtn = btns.find(b => /\bdominio\b/i.test(b.textContent));
+        if (domBtn) domBtn.click();
+      });
+      await new Promise(r => setTimeout(r, 600));
+
+      // 3. Llenar el campo con setter React-compatible
+      const filled = await page.evaluate((pat) => {
+        const inp = document.querySelector('input[type="text"], input[placeholder*="dominio" i], input[placeholder*="patente" i], input[name*="dominio" i]');
+        if (!inp) return false;
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+        if (setter) setter.call(inp, pat);
+        inp.dispatchEvent(new Event('input',  { bubbles: true }));
+        inp.dispatchEvent(new Event('change', { bubbles: true }));
+        inp.focus();
+        return true;
+      }, patente);
+
+      if (filled) return true;
+
+      // 4. Fallback: tipeo real
       return await _fillBySelectors(page, patente, [
-        'input[name="dominio"]', 'input[name="patente"]', 'input[id*="dominio" i]', 'input[id*="patente" i]',
+        'input[type="text"]', 'input[name*="dominio" i]', 'input[placeholder*="dominio" i]',
       ]);
     },
   },
 
   'buenosaires.gob.ar': {
     nombre: 'CABA',
+    waitUntil: 'networkidle2',
+    renderDelay: 3000,
     captcha_selector: '.g-recaptcha, iframe[src*="recaptcha"], iframe[src*="hcaptcha"]',
     plate_fn: async (page, patente, send) => {
-      // Esperar a que el formulario cargue completamente
-      await new Promise(r => setTimeout(r, 1500));
+      // Esperar a que React renderice el formulario
+      await page.waitForFunction(
+        () => document.body.innerText.trim() !== 'default' && document.querySelector('input'),
+        { timeout: 15000 }
+      ).catch(() => {});
+      await new Promise(r => setTimeout(r, 1000));
 
       // 1. Intentar con selectores directos (tipeo real — compatible con React)
       const selectors = [
@@ -616,13 +713,180 @@ function removeSseClient(jobId, res) {
   job.sseClients = job.sseClients.filter(r => r !== res);
 }
 
-async function iniciarVerificacion(jobId, url, patente) {
+async function iniciarVerificacion(jobId, url, patente, modo) {
+  // modo: 'auto' = forzar Obscura, 'manual' = forzar Chrome visible, undefined = auto-detectar
   if (_jobs.has(jobId)) return;
-  _jobs.set(jobId, { browser: null, page: null, status: 'starting', msgs: [], result: null, sseClients: [], patente, url });
-  _runJob(jobId, url, patente).catch(err => {
-    _broadcast(jobId, { status: 'error', msg: `Error: ${err.message}` });
+  _jobs.set(jobId, { browser: null, page: null, status: 'starting', msgs: [], result: null, sseClients: [], patente, url, modo: 'manual' });
+
+  const obscuraBin = process.env.OBSCURA_BIN;
+  const useObscura = modo === 'auto' || (modo !== 'manual' && !!obscuraBin);
+
+  if (useObscura && !obscuraBin) {
+    _broadcast(jobId, { status: 'error', msg: '✗ Obscura no configurado — establecé OBSCURA_BIN en .env' });
     const j = _jobs.get(jobId); if (j) j.status = 'error';
-  });
+    return;
+  }
+
+  if (useObscura) {
+    _runJobObscura(jobId, url, patente).catch(err => {
+      const job = _jobs.get(jobId);
+      if (!job || job.status === 'done') return;
+      if (modo === 'auto') {
+        // forzado: no fallback, reportar error
+        _broadcast(jobId, { status: 'error', msg: `✗ Obscura falló: ${err.message}` });
+        if (job) job.status = 'error';
+      } else {
+        // auto-detect: fallback al navegador visible
+        _broadcast(jobId, { status: 'fallback', msg: `🔄 Auto no disponible (${err.message}) — abriendo navegador...` });
+        if (job) { job.page = null; job.browser = null; job.modo = 'manual'; }
+        _runJob(jobId, url, patente).catch(e => {
+          _broadcast(jobId, { status: 'error', msg: `Error: ${e.message}` });
+          const j = _jobs.get(jobId); if (j) j.status = 'error';
+        });
+      }
+    });
+  } else {
+    _runJob(jobId, url, patente).catch(err => {
+      _broadcast(jobId, { status: 'error', msg: `Error: ${err.message}` });
+      const j = _jobs.get(jobId); if (j) j.status = 'error';
+    });
+  }
+}
+
+// ── Flujo automático con Obscura (headless + stealth) ────────────────────────
+async function _runJobObscura(jobId, url, patente) {
+  const send = (status, msg) => {
+    const job = _jobs.get(jobId);
+    if (job) job.status = status;
+    _broadcast(jobId, { status, msg });
+  };
+
+  send('starting', '🤖 Iniciando verificación automática (Obscura)...');
+
+  const started = await _startObscura();
+  if (!started) throw new Error('Obscura no disponible');
+
+  // Breve pausa para que el server esté aceptando conexiones
+  await new Promise(r => setTimeout(r, 1200));
+
+  const browser = await _connectObscura();
+  const page    = await browser.newPage();
+
+  const job = _jobs.get(jobId);
+  job.browser = browser;
+  job.page    = page;
+  job.modo    = 'auto';
+
+  try {
+    send('navigating', `Navegando a ${url}...`);
+    const _sConf = getSiteConfig(url);
+    await page.goto(url, { waitUntil: _sConf?.waitUntil || 'domcontentloaded', timeout: 30000 });
+    await new Promise(r => setTimeout(r, _sConf?.renderDelay ?? 1500));
+
+    const config = getSiteConfig(url);
+    const captchaSel = config?.captcha_selector || '.g-recaptcha, iframe[src*="recaptcha"], iframe[src*="hcaptcha"]';
+
+    // Verificar CAPTCHA antes de intentar llenar
+    const hasCaptcha = await page.$(captchaSel).then(el => !!el).catch(() => false);
+    if (hasCaptcha) throw new Error('CAPTCHA detectado — requiere intervención manual');
+
+    send('filling', `Completando patente "${patente}"...`);
+    let filled = false;
+    if (config?.plate_fn) {
+      filled = await config.plate_fn(page, patente, send);
+    } else {
+      filled = await _fillByLabel(page, patente, ['patente', 'dominio', 'chapa', 'placa', 'numero'])
+             || await _fillBySelectors(page, patente, [
+                  'input[name="dominio"]', 'input[name="Dominio"]',
+                  'input[name="patente"]', 'input[name="Patente"]',
+                  'input[id*="dominio" i]', 'input[id*="patente" i]',
+                  'input[placeholder*="dominio" i]', 'input[placeholder*="patente" i]',
+                  'input[placeholder*="chapa" i]',
+                ])
+             || await _fillFirstInput(page, patente);
+    }
+    if (!filled) throw new Error('No se encontró el campo de patente');
+
+    send('submitting', 'Enviando formulario...');
+    const submitted = await page.evaluate(() => {
+      const btns = Array.from(document.querySelectorAll('button[type="submit"], input[type="submit"], button'));
+      const btn  = btns.find(b => /buscar|consultar|verificar|enviar|search/i.test((b.textContent || '') + (b.value || '')));
+      if (btn) { btn.click(); return true; }
+      const form = document.querySelector('form');
+      if (form) { form.submit(); return true; }
+      return false;
+    });
+    if (!submitted) throw new Error('No se encontró botón de envío');
+
+    // Esperar navegación o carga dinámica
+    send('waiting', 'Esperando resultados...');
+    await Promise.race([
+      page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }),
+      new Promise(r => setTimeout(r, 8000)),
+    ]).catch(() => {});
+    await new Promise(r => setTimeout(r, 800));
+
+    // CAPTCHA post-submit
+    const hasCaptchaAfter = await page.$(captchaSel).then(el => !!el).catch(() => false);
+    if (hasCaptchaAfter) throw new Error('CAPTCHA apareció tras enviar — requiere intervención manual');
+
+    // Extraer con los mismos extractores existentes
+    send('extracting', 'Extrayendo resultados automáticamente...');
+    const result = await _extractResult(jobId, page);
+
+    job.status = 'done';
+    job.result = result;
+    const n   = result.multas?.length || 0;
+    const msg = result.error_sitio ? `⚠ ${result.error_sitio}`
+              : result.sin_multas  ? '✓ Sin infracciones para esta patente'
+              : `✓ ${n} infracción(es) encontrada(s) [modo automático]`;
+    _broadcast(jobId, { status: result.error_sitio ? 'site_error' : 'done', msg, result, modo: 'auto' });
+    return result;
+
+  } finally {
+    await page.close().catch(() => {});
+    await browser.disconnect().catch(() => {});
+  }
+}
+
+// Extractor interno compartido (sin depender del job.page mutable)
+async function _extractResult(jobId, page) {
+  const job    = _jobs.get(jobId);
+  const config = getSiteConfig(job.url);
+
+  if (config?.extract_fn) {
+    try {
+      const r = await config.extract_fn(page, job.patente);
+      if (r) return r;
+    } catch {}
+  }
+
+  const generic = await _extractGenericTable(page, job.patente);
+  if (generic) return generic;
+
+  if (!process.env.ANTHROPIC_API_KEY) throw new Error('Sin tabla y sin ANTHROPIC_API_KEY para parsear con IA');
+
+  let siteActas = [];
+  if (config?.pre_extract_fn) {
+    try { siteActas = await config.pre_extract_fn(page, (s, m) => _broadcast(jobId, { status: s, msg: m })) || []; } catch {}
+  }
+
+  const pageText = await page.evaluate(() => document.body.innerText).catch(() => '');
+  if (!pageText.trim()) throw new Error('Página vacía');
+
+  _broadcast(jobId, { status: 'ai_parsing', msg: '🤖 IA analizando resultados...' });
+
+  const extraCtx = siteActas.length ? `\n\nDOM:\n${JSON.stringify(siteActas).substring(0, 3000)}` : '';
+  const prompt = `Analizá este contenido de una página de infracciones de tránsito argentina para la patente "${job.patente}".
+Respondé SOLO con JSON válido:
+{"encontradas":true,"sin_multas":false,"error_sitio":null,"multas":[{"numero_acta":"","fecha_infraccion":"","hora_infraccion":"","fecha_vencimiento":"","descripcion":"","articulo_infringido":"","lugar":"","monto":"","puntos":"","estado":"","organismo":"","prueba_urls":[]}]}
+Fechas: YYYY-MM-DD. Monto: número sin puntos de miles. estado: pendiente/pagada/vencida. Si no hay multas → sin_multas:true.${extraCtx}
+TEXTO:
+${pageText.substring(0, 6000)}`;
+
+  const res = await client.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 2500, messages: [{ role: 'user', content: prompt }] });
+  const raw = res.content[0].text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  return JSON.parse(raw);
 }
 
 async function _runJob(jobId, url, patente) {
@@ -655,10 +919,12 @@ async function _runJob(jobId, url, patente) {
     });
 
     send('navigating', `Navegando a ${url}...`);
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    const siteConf = getSiteConfig(url);
+    const waitUntil = siteConf?.waitUntil || 'domcontentloaded';
+    await page.goto(url, { waitUntil, timeout: 45000 });
 
-    // Esperar un poco para que el JS del sitio termine de renderizar
-    await new Promise(r => setTimeout(r, 1200));
+    // Esperar renderizado JS (más para SPAs)
+    await new Promise(r => setTimeout(r, siteConf?.renderDelay ?? 1200));
 
     const config = getSiteConfig(url);
     send('filling', 'Buscando campo de patente...');
@@ -713,6 +979,9 @@ async function _runJob(jobId, url, patente) {
 async function extraerResultados(jobId) {
   const job = _jobs.get(jobId);
   if (!job || !job.page) throw new Error('Job no encontrado o navegador cerrado');
+
+  // Modo auto: el resultado ya fue extraído por _runJobObscura
+  if (job.modo === 'auto' && job.result) return job.result;
 
   _broadcast(jobId, { status: 'extracting', msg: 'Leyendo contenido de la página...' });
 
@@ -945,4 +1214,255 @@ async function cancelarJob(jobId) {
   _jobs.delete(jobId);
 }
 
-module.exports = { iniciarVerificacion, extraerResultados, cancelarJob, getJob, addSseClient, removeSseClient };
+// ── ARCA: Scraping "Mis Comprobantes" ────────────────────────────────────────
+// ── Helper interno: login AFIP + nav a portal ARCA ───────────────────────────
+async function _arcaLogin(cuit, clave, log) {
+  const browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox','--disable-setuid-sandbox'] });
+  const page = await browser.newPage();
+  await page.setViewport({ width: 1280, height: 900 });
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36');
+
+  const screenshot = async (name) => page.screenshot({ path: `./scraper-debug-${name}.png` }).catch(()=>{});
+
+  log('Navegando al login AFIP...');
+  await page.goto('https://auth.afip.gob.ar/contribuyente/login.xhtml', { waitUntil: 'networkidle2', timeout: 30000 });
+  await screenshot('1-login');
+
+  await page.waitForSelector('#F1\\:username', { timeout: 10000 });
+  await page.type('#F1\\:username', String(cuit).replace(/[-\s]/g, ''));
+  await page.click('#F1\\:btnSiguiente');
+  log('CUIT ingresado, esperando campo de clave...');
+  await page.waitForSelector('#F1\\:password', { timeout: 10000 });
+  await screenshot('2-password');
+
+  await page.type('#F1\\:password', clave);
+  await page.click('#F1\\:btnIngresar');
+  log('Clave ingresada, esperando redirect...');
+  await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
+  await screenshot('3-post-login');
+
+  if (page.url().includes('login') || page.url().includes('error')) {
+    await browser.close();
+    throw new Error('Login fallido — verificar CUIT/clave. URL: ' + page.url());
+  }
+  log('Login OK → ' + page.url());
+
+  // Buscar "Mis Comprobantes" en el portal donde aterrizó el login (portalcf o arca)
+  await screenshot('4-portal-post-login');
+
+  const _clickMisComprobantes = async () => {
+    const h = await page.evaluateHandle(() => {
+      const all = Array.from(document.querySelectorAll('a, button, span, div, td, li'));
+      return all.find(el => {
+        const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+        return t === 'mis comprobantes' || t.startsWith('mis comprobantes');
+      }) || null;
+    });
+    const el = h.asElement();
+    if (!el) return false;
+    log('Clickeando "Mis Comprobantes"...');
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(()=>{}),
+      el.click(),
+    ]);
+    await screenshot('5-after-mc-click');
+    log('Redirigido a → ' + page.url());
+    return true;
+  };
+
+  // Intentar en la página actual (portalcf)
+  let found = await _clickMisComprobantes();
+
+  // Fallback: ir al portal público y buscar ahí
+  if (!found) {
+    log('No encontrado en portalcf, probando www.arca.gob.ar...');
+    await page.goto('https://www.arca.gob.ar/', { waitUntil: 'networkidle2', timeout: 30000 });
+    await screenshot('4b-arca-publica');
+    found = await _clickMisComprobantes();
+  }
+
+  if (!found) {
+    log('⚠ "Mis Comprobantes" no encontrado — navegando directo (puede fallar sesión)');
+  }
+
+  return { browser, page, screenshot };
+}
+
+// ── Helper interno: filtrar fechas y extraer tabla (con paginación) ───────────
+async function _arcaFiltrarYExtraer(page, screenshot, url, fechaDesde, fechaHasta, log, mapRow) {
+  log(`Navegando a ${url}...`);
+  await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+  await screenshot('6-target-page');
+
+  if (page.url().includes('login') || page.url().includes('auth.afip')) {
+    throw new Error('Sesión no persistió. URL: ' + page.url());
+  }
+
+  // Debug: inputs disponibles
+  const formDebug = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('input,select')).map(e => ({ id: e.id, name: e.name, type: e.type, value: e.value.slice(0,30) }))
+  );
+  log('Inputs: ' + JSON.stringify(formDebug));
+
+  const _toAR = (iso) => { const [y,m,d] = iso.split('-'); return `${d}/${m}/${y}`; };
+  const fmtDesde = _toAR(fechaDesde);
+  const fmtHasta = _toAR(fechaHasta);
+  const rangeVal = `${fmtDesde} - ${fmtHasta}`;
+
+  // ARCA usa un range picker único: "DD/MM/YYYY - DD/MM/YYYY"
+  // Estrategia: (1) buscar input con value que ya contenga " - " o placeholder similar
+  //             (2) intentar con hidden inputs separados como fallback
+  const fechaSet = await page.evaluate((range, desde, hasta) => {
+    // Buscar range picker (input único con guión)
+    const rangePickers = Array.from(document.querySelectorAll('input')).filter(e =>
+      (e.value && e.value.includes(' - ')) ||
+      (e.placeholder && e.placeholder.includes(' - ')) ||
+      e.id.toLowerCase().includes('fecha') || e.name.toLowerCase().includes('fecha')
+    );
+    if (rangePickers.length > 0) {
+      const rp = rangePickers[0];
+      rp.value = range;
+      rp.dispatchEvent(new Event('input',  { bubbles: true }));
+      rp.dispatchEvent(new Event('change', { bubbles: true }));
+      return { found: 'range', id: rp.id, name: rp.name };
+    }
+    // Fallback: dos campos separados
+    const candidates = Array.from(document.querySelectorAll('input[type="text"],input:not([type])'));
+    const d1 = candidates.find(e => /desde|inicio|from|start/i.test(e.id + e.name));
+    const d2 = candidates.find(e => /hasta|fin|to|end/i.test(e.id + e.name));
+    if (d1) { d1.value = desde; d1.dispatchEvent(new Event('change', {bubbles:true})); }
+    if (d2) { d2.value = hasta; d2.dispatchEvent(new Event('change', {bubbles:true})); }
+    return { found: 'split', d1: d1?.id, d2: d2?.id };
+  }, rangeVal, fmtDesde, fmtHasta);
+  log('Fecha set: ' + JSON.stringify(fechaSet));
+  await screenshot('7-after-dates');
+
+  // Clickear BUSCAR
+  const btnBuscar = await page.evaluateHandle(() => {
+    const btns = Array.from(document.querySelectorAll('button,input[type="submit"],input[type="button"],a'));
+    return btns.find(b => /buscar/i.test(b.textContent || b.value || b.innerText)) || null;
+  });
+  const btnEl = btnBuscar.asElement();
+  if (btnEl) {
+    log('Clickeando BUSCAR...');
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }).catch(()=>{}),
+      btnEl.click(),
+    ]);
+  }
+  await screenshot('8-results-p1');
+
+  // ── Extraer todas las páginas ─────────────────────────────────────────────
+  const allRows = [];
+  let pageNum = 1;
+
+  const extractTableRows = () => page.evaluate(() => {
+    const tables = Array.from(document.querySelectorAll('table'));
+    // Buscar la tabla de datos (la que tenga más columnas)
+    const dataTable = tables.reduce((best, t) => {
+      const cols = (t.querySelector('tr')?.querySelectorAll('th,td')?.length || 0);
+      return cols > (best?.querySelector('tr')?.querySelectorAll('th,td')?.length || 0) ? t : best;
+    }, null);
+    if (!dataTable) return [];
+    const rows = Array.from(dataTable.querySelectorAll('tr')).slice(1); // skip header
+    return rows.map(tr => {
+      const tds = Array.from(tr.querySelectorAll('td')).map(td => td.innerText.trim());
+      return tds.length >= 3 ? tds : null;
+    }).filter(Boolean);
+  });
+
+  while (true) {
+    const pageRows = await extractTableRows();
+    log(`Página ${pageNum}: ${pageRows.length} filas`);
+    allRows.push(...pageRows);
+
+    // Buscar botón "siguiente" de la paginación
+    const nextBtn = await page.evaluateHandle(() => {
+      const links = Array.from(document.querySelectorAll('a, button'));
+      return links.find(el => {
+        const txt = (el.textContent || el.innerText || '').trim();
+        return txt === '»' || txt === '>' || txt === 'Siguiente' || txt === 'Next' ||
+               el.getAttribute('aria-label') === 'Next' ||
+               (el.className && /next|siguiente/i.test(el.className));
+      }) || null;
+    });
+    const nextEl = nextBtn.asElement();
+    if (!nextEl) break;
+
+    // Verificar que no esté deshabilitado
+    const disabled = await page.evaluate(el =>
+      el.disabled || el.classList.contains('disabled') || el.getAttribute('aria-disabled') === 'true'
+    , nextEl);
+    if (disabled) break;
+
+    pageNum++;
+    log(`Navegando a página ${pageNum}...`);
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(()=>{}),
+      nextEl.click(),
+    ]);
+    await new Promise(r => setTimeout(r, 500));
+  }
+
+  await screenshot('9-results-final');
+  log(`Total extraído: ${allRows.length} filas en ${pageNum} página(s)`);
+  return allRows.map(mapRow);
+}
+
+async function scrapearComprobantesRecibidos(cuit, clave, fechaDesde, fechaHasta, onProgress) {
+  const log = msg => { console.log(`[ARCA scraper recibidos] ${msg}`); if (onProgress) onProgress(msg); };
+  const { browser, page, screenshot } = await _arcaLogin(cuit, clave, log);
+  try {
+    const rows = await _arcaFiltrarYExtraer(
+      page, screenshot,
+      'https://fes.afip.gob.ar/mcmp/jsp/comprobantesRecibidos.do',
+      fechaDesde, fechaHasta, log,
+      (tds) => ({
+        fecha:         tds[0] || null,
+        tipo:          tds[1] || null,
+        numero:        tds[2] || null,
+        cuit_emisor:   tds[3] || null,
+        nombre_emisor: tds[4] || null,
+        importe:       tds[5] || null,
+        raw:           tds,
+      })
+    );
+    log(`Encontrados: ${rows.length} comprobantes recibidos`);
+    return rows;
+  } finally {
+    await browser.close();
+  }
+}
+
+async function scrapearComprobantesEmitidos(cuit, clave, fechaDesde, fechaHasta, onProgress) {
+  const log = msg => { console.log(`[ARCA scraper emitidos] ${msg}`); if (onProgress) onProgress(msg); };
+  const { browser, page, screenshot } = await _arcaLogin(cuit, clave, log);
+  try {
+    const rows = await _arcaFiltrarYExtraer(
+      page, screenshot,
+      'https://fes.afip.gob.ar/mcmp/jsp/comprobantesEmitidos.do',
+      fechaDesde, fechaHasta, log,
+      (tds) => {
+        // Tabla web: Fecha | Tipo | Número (PV-NRO) | Denominación Receptor | Imp. Total
+        const numero = tds[2] || null; // "00003-00000015"
+        const [pvStr, nroStr] = (numero || '').split('-');
+        return {
+          fecha:                 tds[0] || null,
+          tipo:                  tds[1] || null,  // "11 - Factura C"
+          numero,
+          pto_venta:             parseInt((pvStr||'').replace(/\D/g,'')) || null,
+          nro_comprobante:       parseInt((nroStr||'').replace(/\D/g,'')) || null,
+          denominacion_receptor: tds[3] || null,
+          importe:               tds[4] || null,
+          raw:                   tds,
+        };
+      }
+    );
+    log(`Encontrados: ${rows.length} comprobantes emitidos`);
+    return rows;
+  } finally {
+    await browser.close();
+  }
+}
+
+module.exports = { iniciarVerificacion, extraerResultados, cancelarJob, getJob, addSseClient, removeSseClient, stopObscura, scrapearComprobantesRecibidos, scrapearComprobantesEmitidos };

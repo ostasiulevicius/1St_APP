@@ -230,7 +230,7 @@ app.get('/api/turnos/:id', async (req, res) => {
                 FROM multa_adjuntos a WHERE a.multa_id = m.id) AS adjuntos_json
         FROM multas m
         WHERE (m.chofer_id = ? OR m.vehiculo_id = ?)
-          AND m.estado IN ('pendiente','apelada')
+          AND m.estado IN ('pendiente','apelada','pagada')
           AND DATE_ADD(m.fecha_infraccion, INTERVAL TIME_TO_SEC(IFNULL(m.hora_infraccion,'00:00:00')) SECOND) >= ?
           AND DATE_ADD(m.fecha_infraccion, INTERVAL TIME_TO_SEC(IFNULL(m.hora_infraccion,'00:00:00')) SECOND) <= ?
         ORDER BY m.fecha_infraccion ASC
@@ -340,7 +340,8 @@ app.get('/api/choferes', async (req, res) => {
 });
 
 app.post('/api/choferes', async (req, res) => {
-  const { nombre, telefono, dni, cuil, email, domicilio, entre_calles, codigo_postal, lat, lng, modalidad, fecha_nacimiento, condicion_fiscal_id } = req.body;
+  const { nombre, telefono, dni, cuil, email, domicilio, entre_calles, codigo_postal, lat, lng, modalidad, fecha_nacimiento, condicion_fiscal_id,
+          telefono_alt1, telefono_alt1_vinculo, telefono_alt2, telefono_alt2_vinculo } = req.body;
   if (!nombre || !telefono) {
     return res.status(400).json({ message: 'Nombre y Teléfono son requeridos' });
   }
@@ -355,10 +356,15 @@ app.post('/api/choferes', async (req, res) => {
       return res.status(409).json({ message: `Ya existe un chofer activo con DNI ${dni}: ${dup[0].nombre} (ID ${dup[0].id})` });
     }
     const uid = getUsuarioId(req);
+    await db.query(`ALTER TABLE choferes ADD COLUMN IF NOT EXISTS telefono_alt1 VARCHAR(30) NULL`).catch(()=>{});
+    await db.query(`ALTER TABLE choferes ADD COLUMN IF NOT EXISTS telefono_alt1_vinculo VARCHAR(60) NULL`).catch(()=>{});
+    await db.query(`ALTER TABLE choferes ADD COLUMN IF NOT EXISTS telefono_alt2 VARCHAR(30) NULL`).catch(()=>{});
+    await db.query(`ALTER TABLE choferes ADD COLUMN IF NOT EXISTS telefono_alt2_vinculo VARCHAR(60) NULL`).catch(()=>{});
     const [result] = await db.query(`
-      INSERT INTO choferes (nombre, telefono, telegram_chat_id, dni, cuil, email, domicilio, entre_calles, codigo_postal, lat, lng, modalidad, fecha_nacimiento, condicion_fiscal_id, activo, creado_por, creado_en)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NOW())
-    `, [nombre, telefono, req.body.telegram_chat_id||null, dni, cuil, email, domicilio, entre_calles||null, codigo_postal||null, lat||null, lng||null, modalidad, fecha_nacimiento, condicion_fiscal_id, uid]);
+      INSERT INTO choferes (nombre, telefono, telegram_chat_id, dni, cuil, email, domicilio, entre_calles, codigo_postal, lat, lng, modalidad, fecha_nacimiento, condicion_fiscal_id, activo, creado_por, creado_en, telefono_alt1, telefono_alt1_vinculo, telefono_alt2, telefono_alt2_vinculo, liquidacion)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NOW(), ?, ?, ?, ?, ?)
+    `, [nombre, telefono, req.body.telegram_chat_id||null, dni, cuil, email, domicilio, entre_calles||null, codigo_postal||null, lat||null, lng||null, modalidad, fecha_nacimiento, condicion_fiscal_id, uid,
+        telefono_alt1||null, telefono_alt1_vinculo||null, telefono_alt2||null, telefono_alt2_vinculo||null, req.body.liquidacion||null]);
     await registrarAuditoria(req, 'choferes', 'crear', result.insertId, `Nuevo chofer: ${nombre}`);
     res.status(201).json({ message: 'Chofer registrado correctamente', id: result.insertId });
   } catch (err) {
@@ -368,7 +374,8 @@ app.post('/api/choferes', async (req, res) => {
 
 app.put('/api/choferes/:id', async (req, res) => {
   const { id } = req.params;
-  const { nombre, telefono, telegram_chat_id, dni, cuil, email, domicilio, entre_calles, codigo_postal, lat, lng, modalidad, fecha_nacimiento, condicion_fiscal_id, activo } = req.body;
+  const { nombre, telefono, telegram_chat_id, dni, cuil, email, domicilio, entre_calles, codigo_postal, lat, lng, modalidad, fecha_nacimiento, condicion_fiscal_id, activo,
+          telefono_alt1, telefono_alt1_vinculo, telefono_alt2, telefono_alt2_vinculo } = req.body;
   if (!nombre || !telefono) {
     return res.status(400).json({ message: 'Nombre y Teléfono son requeridos' });
   }
@@ -383,13 +390,22 @@ app.put('/api/choferes/:id', async (req, res) => {
       return res.status(409).json({ message: `Ya existe otro chofer activo con DNI ${dni}: ${dup[0].nombre} (ID ${dup[0].id})` });
     }
     const uid = getUsuarioId(req);
+    await db.query(`ALTER TABLE choferes ADD COLUMN IF NOT EXISTS telefono_alt1 VARCHAR(30) NULL`).catch(()=>{});
+    await db.query(`ALTER TABLE choferes ADD COLUMN IF NOT EXISTS telefono_alt1_vinculo VARCHAR(60) NULL`).catch(()=>{});
+    await db.query(`ALTER TABLE choferes ADD COLUMN IF NOT EXISTS telefono_alt2 VARCHAR(30) NULL`).catch(()=>{});
+    await db.query(`ALTER TABLE choferes ADD COLUMN IF NOT EXISTS telefono_alt2_vinculo VARCHAR(60) NULL`).catch(()=>{});
+    await db.query(`ALTER TABLE choferes ADD COLUMN IF NOT EXISTS liquidacion VARCHAR(20) NULL`).catch(()=>{});
+    const { liquidacion } = req.body;
     await db.query(`
       UPDATE choferes
       SET nombre = ?, telefono = ?, telegram_chat_id = ?, dni = ?, cuil = ?, email = ?, domicilio = ?, entre_calles = ?, codigo_postal = ?, lat = ?, lng = ?,
           modalidad = ?, fecha_nacimiento = ?, condicion_fiscal_id = ?, activo = ?,
-          modificado_por = ?, modificado_en = NOW()
+          telefono_alt1 = ?, telefono_alt1_vinculo = ?, telefono_alt2 = ?, telefono_alt2_vinculo = ?,
+          liquidacion = ?, modificado_por = ?, modificado_en = NOW()
       WHERE id = ?
-    `, [nombre, telefono, telegram_chat_id||null, dni, cuil, email, domicilio, entre_calles||null, codigo_postal||null, lat||null, lng||null, modalidad, fecha_nacimiento, condicion_fiscal_id, activo !== undefined ? activo : 1, uid, id]);
+    `, [nombre, telefono, telegram_chat_id||null, dni, cuil, email, domicilio, entre_calles||null, codigo_postal||null, lat||null, lng||null, modalidad, fecha_nacimiento, condicion_fiscal_id, activo !== undefined ? activo : 1,
+        telefono_alt1||null, telefono_alt1_vinculo||null, telefono_alt2||null, telefono_alt2_vinculo||null,
+        liquidacion||null, uid, id]);
     await registrarAuditoria(req, 'choferes', 'editar', id, `Chofer actualizado: ${nombre}`);
     res.json({ message: 'Chofer actualizado correctamente' });
   } catch (err) {
@@ -826,7 +842,8 @@ app.post('/api/services', async (req, res) => {
   const { vehiculo_id, proveedor_id, tipo, descripcion, costo, fecha, kilometraje, km_intervalo, km_proximo, notas,
           factura_tipo, factura_numero, factura_fecha, factura_proveedor, factura_proveedor_id,
           factura_tipo_auth, factura_cae, factura_cae_vto,
-          factura_subtotal, factura_iva, factura_total, factura_items, factura_receptor, factura_url } = req.body;
+          factura_subtotal, factura_iva, factura_total, factura_items, factura_receptor, factura_url,
+          diagnostico_json } = req.body;
   if (!vehiculo_id || !tipo) return res.status(400).json({ message: 'vehiculo_id y tipo son obligatorios' });
   try {
     const db = await getPool();
@@ -835,12 +852,14 @@ app.post('/api/services', async (req, res) => {
         vehiculo_id, proveedor_id, tipo, descripcion, costo, fecha, kilometraje, km_intervalo, km_proximo, notas,
         factura_tipo, factura_numero, factura_fecha, factura_proveedor, factura_proveedor_id,
         factura_tipo_auth, factura_cae, factura_cae_vto,
-        factura_subtotal, factura_iva, factura_total, factura_items, factura_receptor, factura_url
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        factura_subtotal, factura_iva, factura_total, factura_items, factura_receptor, factura_url,
+        diagnostico_json
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [vehiculo_id, proveedor_id||null, tipo, descripcion||null, costo||null, fecha||null, kilometraje||null, km_intervalo||null, km_proximo||null, notas||null,
        factura_tipo||null, factura_numero||null, factura_fecha||null, factura_proveedor||null, factura_proveedor_id||null,
        factura_tipo_auth||null, factura_cae||null, factura_cae_vto||null,
-       factura_subtotal||null, factura_iva||null, factura_total||null, factura_items||null, factura_receptor||null, factura_url||null]
+       factura_subtotal||null, factura_iva||null, factura_total||null, factura_items||null, factura_receptor||null, factura_url||null,
+       diagnostico_json ? JSON.stringify(diagnostico_json) : null]
     );
     const [[vhS]] = await db.query('SELECT patente FROM vehiculos WHERE id=?', [vehiculo_id]);
     await registrarAuditoria(req, 'services', 'crear', r.insertId, `Service #${r.insertId} — ${vhS?.patente||'?'} · ${tipo}${descripcion ? ' — ' + descripcion : ''} · ${fecha||''}`);
@@ -852,7 +871,8 @@ app.put('/api/services/:id', async (req, res) => {
   const { vehiculo_id, proveedor_id, tipo, descripcion, costo, fecha, kilometraje, km_intervalo, km_proximo, notas,
           factura_tipo, factura_numero, factura_fecha, factura_proveedor, factura_proveedor_id,
           factura_tipo_auth, factura_cae, factura_cae_vto,
-          factura_subtotal, factura_iva, factura_total, factura_items, factura_receptor, factura_url } = req.body;
+          factura_subtotal, factura_iva, factura_total, factura_items, factura_receptor, factura_url,
+          diagnostico_json } = req.body;
   const userId = req.session?.user?.id || null;
   const now = new Date();
   try {
@@ -871,6 +891,7 @@ app.put('/api/services/:id', async (req, res) => {
       'factura_cae=?','factura_cae_vto=?',
       'factura_subtotal=?','factura_iva=?','factura_total=?','factura_items=?','factura_receptor=?','factura_url=?',
       'factura_cargado_por=?',
+      'diagnostico_json=?',
       'modificado_por=?','modificado_at=?'
     ];
     const vals = [
@@ -881,6 +902,7 @@ app.put('/api/services/:id', async (req, res) => {
       factura_cae||null, factura_cae_vto||null,
       factura_subtotal||null, factura_iva||null, factura_total||null, factura_items||null, factura_receptor||null, factura_url||null,
       factCargadoPor,
+      diagnostico_json !== undefined ? JSON.stringify(diagnostico_json) : null,
       userId, now,
       req.params.id
     ];
@@ -1076,10 +1098,21 @@ app.post('/api/services/:id/pagos', async (req, res) => {
 });
 
 // 8. Multas
+app.get('/api/multas/check-actas', async (req, res) => {
+  try {
+    const db  = await getPool();
+    const actas = [].concat(req.query.acta || []).filter(Boolean);
+    if (!actas.length) return res.json([]);
+    const placeholders = actas.map(() => '?').join(',');
+    const [rows] = await db.query(`SELECT numero_acta FROM multas WHERE numero_acta IN (${placeholders})`, actas);
+    res.json(rows.map(r => r.numero_acta));
+  } catch(err) { res.status(500).json({ message: err.message }); }
+});
+
 app.get('/api/multas', async (req, res) => {
   try {
     const db = await getPool();
-    const { chofer_id, vehiculo_id, estado, desde, hasta } = req.query;
+    const { chofer_id, vehiculo_id, estado, desde, hasta, municipalidad_id } = req.query;
     let where = [];
     const vals = [];
     if (chofer_id === 'sin_asignar') {
@@ -1103,6 +1136,10 @@ app.get('/api/multas', async (req, res) => {
     if (hasta) {
       where.push('m.fecha_infraccion <= ?');
       vals.push(hasta);
+    }
+    if (municipalidad_id) {
+      where.push('m.municipalidad_id = ?');
+      vals.push(municipalidad_id);
     }
     const [rows] = await db.query(`
       SELECT m.*, v.patente, v.marca, v.modelo,
@@ -1152,20 +1189,25 @@ app.get('/api/multas/:id/buscar-chofer', async (req, res) => {
 });
 
 app.post('/api/multas', async (req, res) => {
-  const { vehiculo_id, chofer_id, municipalidad_id, fecha_infraccion, hora_infraccion, numero_acta, descripcion, articulo_infringido, lugar, monto, puntos, fecha_vencimiento, url_consulta, estado, nombre_infractor, dni_infractor, notas,
+  const { vehiculo_id, chofer_id, municipalidad_id, fecha_infraccion, hora_infraccion, numero_acta, descripcion, articulo_infringido, lugar, monto, monto_voluntario, monto_total, puntos, fecha_vencimiento, fecha_vto_voluntario, fecha_vto_total, url_consulta, estado, nombre_infractor, dni_infractor, notas,
           fecha_emision_acta, fecha_notificacion, medio_notificacion, codigo_seguimiento_postal, constancia_recepcion,
-          fecha_pago, medio_pago_multa, nro_operacion_pago } = req.body;
+          fecha_pago, medio_pago_multa, nro_operacion_pago, cuenta_id_pago, tarjeta_id_pago, cuotas_pago } = req.body;
   if (!vehiculo_id || !descripcion) return res.status(400).json({ message: 'vehiculo_id y descripción son obligatorios' });
+  const _montoVol  = monto_voluntario || monto || null;
+  const _fVtoVol   = fecha_vto_voluntario || fecha_vencimiento || null;
   try {
     const db = await getPool();
     const [r] = await db.query(
-      `INSERT INTO multas (vehiculo_id, chofer_id, municipalidad_id, fecha_infraccion, hora_infraccion, numero_acta, descripcion, articulo_infringido, lugar, monto, puntos, fecha_vencimiento, url_consulta, estado, nombre_infractor, dni_infractor, notas,
+      `INSERT INTO multas (vehiculo_id, chofer_id, municipalidad_id, fecha_infraccion, hora_infraccion, numero_acta, descripcion, articulo_infringido, lugar, monto, monto_voluntario, monto_total, puntos, fecha_vencimiento, fecha_vto_voluntario, fecha_vto_total, url_consulta, estado, nombre_infractor, dni_infractor, notas,
                            fecha_emision_acta, fecha_notificacion, medio_notificacion, codigo_seguimiento_postal, constancia_recepcion,
-                           fecha_pago, medio_pago_multa, nro_operacion_pago)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [vehiculo_id, chofer_id||null, municipalidad_id||null, fecha_infraccion||null, hora_infraccion||null, numero_acta||null, descripcion, articulo_infringido||null, lugar||null, monto||null, puntos||null, fecha_vencimiento||null, url_consulta||null, estado||'pendiente', nombre_infractor||null, dni_infractor||null, notas||null,
+                           fecha_pago, medio_pago_multa, nro_operacion_pago, cuenta_id_pago, tarjeta_id_pago, cuotas_pago)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [vehiculo_id, chofer_id||null, municipalidad_id||null, fecha_infraccion||null, hora_infraccion||null, numero_acta||null, descripcion, articulo_infringido||null, lugar||null,
+       _montoVol, _montoVol, monto_total||null,
+       puntos||null, _fVtoVol, _fVtoVol, fecha_vto_total||null,
+       url_consulta||null, estado||'pendiente', nombre_infractor||null, dni_infractor||null, notas||null,
        fecha_emision_acta||null, fecha_notificacion||null, medio_notificacion||null, codigo_seguimiento_postal||null, constancia_recepcion ? 1 : 0,
-       fecha_pago||null, medio_pago_multa||null, nro_operacion_pago||null]
+       fecha_pago||null, medio_pago_multa||null, nro_operacion_pago||null, cuenta_id_pago||null, tarjeta_id_pago||null, cuotas_pago||null]
     );
     await registrarAuditoria(req, 'multas', 'crear', r.insertId, `Multa registrada${numero_acta ? ': acta ' + numero_acta : ''} — ${descripcion}`);
     res.status(201).json({ message: 'Infracción registrada', id: r.insertId });
@@ -1173,18 +1215,23 @@ app.post('/api/multas', async (req, res) => {
 });
 
 app.put('/api/multas/:id', async (req, res) => {
-  const { vehiculo_id, chofer_id, municipalidad_id, fecha_infraccion, hora_infraccion, numero_acta, descripcion, articulo_infringido, lugar, monto, puntos, fecha_vencimiento, url_consulta, estado, nombre_infractor, dni_infractor, notas,
+  const { vehiculo_id, chofer_id, municipalidad_id, fecha_infraccion, hora_infraccion, numero_acta, descripcion, articulo_infringido, lugar, monto, monto_voluntario, monto_total, puntos, fecha_vencimiento, fecha_vto_voluntario, fecha_vto_total, url_consulta, estado, nombre_infractor, dni_infractor, notas,
           fecha_emision_acta, fecha_notificacion, medio_notificacion, codigo_seguimiento_postal, constancia_recepcion,
-          fecha_pago, medio_pago_multa, nro_operacion_pago } = req.body;
+          fecha_pago, medio_pago_multa, nro_operacion_pago, cuenta_id_pago, tarjeta_id_pago, cuotas_pago } = req.body;
+  const _montoVol = monto_voluntario || monto || null;
+  const _fVtoVol  = fecha_vto_voluntario || fecha_vencimiento || null;
   try {
     const db = await getPool();
     await db.query(
-      `UPDATE multas SET vehiculo_id=?, chofer_id=?, municipalidad_id=?, fecha_infraccion=?, hora_infraccion=?, numero_acta=?, descripcion=?, articulo_infringido=?, lugar=?, monto=?, puntos=?, fecha_vencimiento=?, url_consulta=?, estado=?, nombre_infractor=?, dni_infractor=?, notas=?,
+      `UPDATE multas SET vehiculo_id=?, chofer_id=?, municipalidad_id=?, fecha_infraccion=?, hora_infraccion=?, numero_acta=?, descripcion=?, articulo_infringido=?, lugar=?, monto=?, monto_voluntario=?, monto_total=?, puntos=?, fecha_vencimiento=?, fecha_vto_voluntario=?, fecha_vto_total=?, url_consulta=?, estado=?, nombre_infractor=?, dni_infractor=?, notas=?,
                          fecha_emision_acta=?, fecha_notificacion=?, medio_notificacion=?, codigo_seguimiento_postal=?, constancia_recepcion=?,
-                         fecha_pago=?, medio_pago_multa=?, nro_operacion_pago=? WHERE id=?`,
-      [vehiculo_id, chofer_id||null, municipalidad_id||null, fecha_infraccion||null, hora_infraccion||null, numero_acta||null, descripcion, articulo_infringido||null, lugar||null, monto||null, puntos||null, fecha_vencimiento||null, url_consulta||null, estado||'pendiente', nombre_infractor||null, dni_infractor||null, notas||null,
+                         fecha_pago=?, medio_pago_multa=?, nro_operacion_pago=?, cuenta_id_pago=?, tarjeta_id_pago=?, cuotas_pago=? WHERE id=?`,
+      [vehiculo_id, chofer_id||null, municipalidad_id||null, fecha_infraccion||null, hora_infraccion||null, numero_acta||null, descripcion, articulo_infringido||null, lugar||null,
+       _montoVol, _montoVol, monto_total||null,
+       puntos||null, _fVtoVol, _fVtoVol, fecha_vto_total||null,
+       url_consulta||null, estado||'pendiente', nombre_infractor||null, dni_infractor||null, notas||null,
        fecha_emision_acta||null, fecha_notificacion||null, medio_notificacion||null, codigo_seguimiento_postal||null, constancia_recepcion ? 1 : 0,
-       fecha_pago||null, medio_pago_multa||null, nro_operacion_pago||null, req.params.id]
+       fecha_pago||null, medio_pago_multa||null, nro_operacion_pago||null, cuenta_id_pago||null, tarjeta_id_pago||null, cuotas_pago||null, req.params.id]
     );
     await registrarAuditoria(req, 'multas', 'editar', req.params.id, `Multa actualizada${numero_acta ? ': acta ' + numero_acta : ''} — estado: ${estado||'pendiente'}`);
     res.json({ message: 'Infracción actualizada' });
@@ -1381,6 +1428,48 @@ app.delete('/api/municipalidades/:id', async (req, res) => {
 const scraper = require('./scraper');
 const { v4: uuidv4 } = require('uuid');
 
+// Auditoría de verificaciones
+app.post('/api/verificacion/log', async (req, res) => {
+  try {
+    const db = await getPool();
+    const { vehiculo_id, municipalidad_id, resultado, multas_encontradas, multas_importadas, usuario } = req.body;
+    await db.query(
+      `INSERT INTO multa_verificacion_log (vehiculo_id, municipalidad_id, resultado, multas_encontradas, multas_importadas, usuario)
+       VALUES (?,?,?,?,?,?)`,
+      [vehiculo_id, municipalidad_id, resultado || 'sin_multas', multas_encontradas || 0, multas_importadas || 0, usuario || null]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+app.get('/api/verificacion/log/:vehiculoId/:municipalidadId', async (req, res) => {
+  try {
+    const db = await getPool();
+    const [rows] = await db.query(
+      `SELECT l.*, v.patente FROM multa_verificacion_log l
+       JOIN vehiculos v ON v.id = l.vehiculo_id
+       WHERE l.vehiculo_id=? AND l.municipalidad_id=?
+       ORDER BY l.fecha DESC LIMIT 10`,
+      [req.params.vehiculoId, req.params.municipalidadId]
+    );
+    res.json(rows);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+app.get('/api/verificacion/log/ultimo/:vehiculoId/:municipalidadId', async (req, res) => {
+  try {
+    const db = await getPool();
+    const [[row]] = await db.query(
+      `SELECT l.fecha, l.resultado, l.multas_encontradas, l.multas_importadas, l.usuario
+       FROM multa_verificacion_log l
+       WHERE l.vehiculo_id=? AND l.municipalidad_id=?
+       ORDER BY l.fecha DESC LIMIT 1`,
+      [req.params.vehiculoId, req.params.municipalidadId]
+    );
+    res.json(row || null);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
 // Iniciar verificación: abre navegador, llena la patente
 app.post('/api/verificacion/iniciar', async (req, res) => {
   try {
@@ -1393,8 +1482,9 @@ app.post('/api/verificacion/iniciar', async (req, res) => {
     if (!veh)  return res.status(404).json({ message: 'Vehículo no encontrado' });
     if (!muni.url_consulta) return res.status(400).json({ message: 'Esta municipalidad no tiene URL de consulta configurada' });
 
+    const { modo } = req.body; // 'auto' | 'manual' | undefined (auto-detect)
     const jobId = uuidv4();
-    await scraper.iniciarVerificacion(jobId, muni.url_consulta, veh.patente);
+    await scraper.iniciarVerificacion(jobId, muni.url_consulta, veh.patente, modo);
     res.json({ jobId, url: muni.url_consulta, patente: veh.patente });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
@@ -1745,12 +1835,14 @@ app.post('/api/prestamos/:id/cuotas/bulk', async (req, res) => {
 
 // Cuotas agrupadas por mes (para gráfico)
 app.get('/api/prestamos/cuotas/por-mes', async (req, res) => {
-  const { year, persona_id, estado } = req.query;
+  const { year, persona_id, estado, desde, hasta } = req.query;
   try {
     const db = await getPool();
     let where = [];
     const params = [];
     if (year)       { where.push('YEAR(pc.fecha) = ?'); params.push(year); }
+    if (desde)      { where.push('pc.fecha >= ?'); params.push(desde); }
+    if (hasta)      { where.push('pc.fecha <= ?'); params.push(hasta); }
     if (persona_id) { where.push('(c.persona_id = ? OR v.persona_id = ?)'); params.push(persona_id, persona_id); }
     if (estado)     { where.push('pr.estado = ?'); params.push(estado); }
     const whereStr = where.length ? 'WHERE ' + where.join(' AND ') : '';
@@ -1915,7 +2007,7 @@ app.get('/api/pagos/:id', async (req, res) => {
   try {
     const db = await getPool();
     const [[pago]] = await db.query(`
-      SELECT pg.*, c.nombre as chofer_nombre, cu.alias as cuenta_alias
+      SELECT pg.*, c.nombre as chofer_nombre, c.modalidad as chofer_modalidad, cu.alias as cuenta_alias
       FROM pagos pg
       LEFT JOIN choferes c ON pg.chofer_id = c.id
       LEFT JOIN cuentas cu ON pg.cuenta_id = cu.id
@@ -1978,6 +2070,19 @@ app.get('/api/pagos/:id/conceptos', async (req, res) => {
     const db = await getPool();
     const [rows] = await db.query('SELECT * FROM pago_conceptos WHERE pago_id=?', [req.params.id]);
     res.json(rows);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+app.post('/api/pagos/:id/conceptos', async (req, res) => {
+  try {
+    const db = await getPool();
+    const conceptos = req.body;
+    if (!Array.isArray(conceptos)) return res.status(400).json({ message: 'Se esperaba un array' });
+    await db.query('DELETE FROM pago_conceptos WHERE pago_id=?', [req.params.id]);
+    for (const c of conceptos) {
+      if (c.monto > 0) await db.query('INSERT INTO pago_conceptos (pago_id,concepto,monto) VALUES (?,?,?)', [req.params.id, c.concepto, c.monto]);
+    }
+    res.json({ message: 'Conceptos guardados' });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
@@ -2449,6 +2554,7 @@ app.post('/api/telegram/send', requireAuth, async (req, res) => {
 
 let botReadyStatus = false;
 let currentQR = null;
+let _waGroupsCache = [];
 
 // ── Multi-sesión WhatsApp ─────────────────────────────────────────────────────
 // Cada sesión tiene { client, ready, qr, destroying }
@@ -2456,27 +2562,160 @@ const waSessions = new Map();
 
 // Estado de facturación pendiente: mientras el bot Facturitas procesa una factura,
 // guardamos el pago_id para vincular el PDF cuando llegue como media.
-let _pendingFactura = null; // { pagoId, ts }
-const FACTURITAS_NUMBER  = '12394219557';      // número real (+1 239 421-9557)
-const FACTURITAS_LID     = '274504764887078'; // LID interno de WA (formato nuevo @lid)
+let _pendingFactura = null;   // { pagoId, ts }
+let _lastPdfFacturitas = null; // { data, mimetype, ts } — último PDF recibido de Facturitas, para recuperación manual
+const FACTURITAS_NUMBER  = '12394219557';
+const FACTURITAS_LID     = '274504764887078';
 const _isFacturitas = (bare) => bare === FACTURITAS_NUMBER || bare === FACTURITAS_LID;
+const _factMsgProcessed = new Set();
+
+// Descarga manual de media WA: usa directPath + mediaKey de message._data
+// cuando downloadMedia() falla (común con cuentas @lid en wwebjs)
+async function _downloadWAMediaManual(message) {
+  try {
+    const d = message._data || {};
+    const directPath = d.directPath || message.directPath;
+    const mediaKeyB64 = d.mediaKey || message.mediaKey;
+    if (!directPath || !mediaKeyB64) {
+      console.log('[FACTURITAS][manual] Sin directPath/mediaKey en _data');
+      return null;
+    }
+    // HKDF expand: deriva IV (16) + cipherKey (32) + macKey (32) desde mediaKey (32)
+    const mediaKey = Buffer.from(mediaKeyB64, 'base64');
+    const typeLabel = message.type === 'document' ? 'Document'
+                    : message.type === 'image'    ? 'Image'
+                    : message.type === 'audio'    ? 'Audio'
+                    : message.type === 'video'    ? 'Video' : 'Document';
+    const info = Buffer.from(`WhatsApp ${typeLabel} Keys`);
+    const expanded = Buffer.from(
+      require('crypto').hkdfSync('sha256', mediaKey, Buffer.alloc(32, 0), info, 112)
+    );
+    const iv         = expanded.slice(0,  16);
+    const cipherKey  = expanded.slice(16, 48);
+    // Descargar archivo cifrado desde CDN de WhatsApp
+    const url = `https://mmg.whatsapp.net${directPath}`;
+    console.log(`[FACTURITAS][manual] Descargando desde CDN: ${url.slice(0,80)}...`);
+    const resp = await fetch(url, {
+      headers: {
+        'User-Agent': 'WhatsApp/2.24.10.76 A',
+        'Origin': 'https://web.whatsapp.com',
+        'Referer': 'https://web.whatsapp.com/',
+      },
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!resp.ok) { console.log(`[FACTURITAS][manual] CDN HTTP ${resp.status}`); return null; }
+    const encBuf = Buffer.from(await resp.arrayBuffer());
+    // Descifrar AES-256-CBC (los últimos 10 bytes son MAC, no forman parte del ciphertext)
+    const ciphertext = encBuf.slice(0, -10);
+    const decipher = require('crypto').createDecipheriv('aes-256-cbc', cipherKey, iv);
+    decipher.setAutoPadding(true);
+    const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    const mimetype = d.mimetype || 'application/pdf';
+    console.log(`[FACTURITAS][manual] ✓ Descifrado OK: ${decrypted.length} bytes, mime=${mimetype}`);
+    return { data: decrypted.toString('base64'), mimetype, filename: d.filename || null };
+  } catch (err) {
+    console.error('[FACTURITAS][manual] Error descarga manual:', err.message);
+    return null;
+  }
+}
 
 async function _captureFacturaPDF(message) {
+  // Deduplicar: solo bloquear si el mensaje ya fue procesado EXITOSAMENTE
+  const msgId = message.id?._serialized || message.id?.id || null;
+  if (msgId && _factMsgProcessed.has(msgId)) {
+    console.log(`[FACTURITAS] msg ${msgId} ya procesado, skip`);
+    return;
+  }
   try {
-    const media = await message.downloadMedia();
-    if (!media || !media.mimetype?.includes('pdf')) return;
-    console.log('[FACTURITAS] PDF recibido, buscando cobro pendiente...');
+    // downloadMedia con retry agresivo — el PDF de Facturitas a veces llega antes de que
+    // el media esté disponible en los servidores de WA
+    let media = null;
+    const delays = [1000, 2000, 3000, 4000, 5000, 6000];
+    for (let _i = 0; _i < delays.length; _i++) {
+      try {
+        media = await message.downloadMedia();
+        if (media?.data) break;
+      } catch(_e) {
+        console.log(`[FACTURITAS] downloadMedia intento ${_i+1} falló: ${_e.message}`);
+      }
+      await new Promise(r => setTimeout(r, delays[_i]));
+    }
+    // Fallback 1: leer de _data.body (algunos mensajes wwebjs exponen base64 directamente)
+    if (!media?.data && (message._data?.body || message._data?.mediaData?.body)) {
+      const raw = message._data?.body || message._data?.mediaData?.body;
+      const mt  = message._data?.mimetype || message._data?.mediaData?.mimetype || 'application/pdf';
+      media = { data: raw, mimetype: mt };
+      console.log(`[FACTURITAS] media obtenido de _data.body (fallback1), mime=${mt}`);
+    }
+    // Fallback 2: descarga manual via CDN con directPath + mediaKey (funciona con @lid)
+    if (!media?.data) {
+      console.log('[FACTURITAS] downloadMedia falló — intentando descarga manual CDN...');
+      media = await _downloadWAMediaManual(message);
+    }
+    console.log(`[FACTURITAS] media final: mime=${media?.mimetype} size=${media?.data?.length}`);
+    if (!media?.data) {
+      console.warn('[FACTURITAS] No se pudo obtener media por ningún método');
+      return;
+    }
+    // Aceptar: PDF explícito, o documento cuyo mime sea desconocido pero type=document de Facturitas
+    const isPdf = media.mimetype?.includes('pdf')
+               || (!media.mimetype && message.type === 'document');
+    if (!isPdf) {
+      console.log(`[FACTURITAS] descartado — no es PDF (mime=${media.mimetype}, type=${message.type})`);
+      return;
+    }
+    if (!media.mimetype) media.mimetype = 'application/pdf'; // normalizar
+    // Guardar el último PDF en memoria Y en disco — así sobrevive reinicios del server
+    _lastPdfFacturitas = { data: media.data, mimetype: media.mimetype, ts: Date.now() };
+    try {
+      const _lpDir = path.join(__dirname, 'public', 'uploads', 'facturas');
+      fs.mkdirSync(_lpDir, { recursive: true });
+      fs.writeFileSync(path.join(_lpDir, '_last_facturitas.pdf'), Buffer.from(media.data, 'base64'));
+    } catch(_lpErr) { console.warn('[FACTURITAS] No se pudo persistir last PDF a disco:', _lpErr.message); }
 
     const db = await getPool();
-    // Preferir _pendingFactura en memoria; si es null buscar en DB
-    let pagoId = _pendingFactura?.pagoId || null;
+    let pagoId = null;
+
+    // 1) Prioridad: _pendingFactura en memoria (set al invocar /facturar desde la UI)
+    if (_pendingFactura?.pagoId) {
+      pagoId = _pendingFactura.pagoId;
+      console.log(`[FACTURITAS] PDF recibido — usando _pendingFactura pagoId=${pagoId}`);
+    }
+
+    // 2) Fallback: extraer nro de operación del caption/body del mensaje para matchear
+    if (!pagoId) {
+      const caption = (message.body || message.caption || '').trim();
+      // Facturitas envía el nombre del servicio como caption: "Alquiler (Op. 168886284276)"
+      const mOp = caption.match(/Op\.\s*(\d{6,})/i);
+      const mCob = caption.match(/Cob\.\s*(\d+)/i);
+      if (mOp) {
+        const nro = mOp[1];
+        const [[row]] = await db.query(
+          "SELECT id FROM pagos WHERE nro_transaccion=? AND factura_ref='pending' LIMIT 1", [nro]
+        );
+        if (row) { pagoId = row.id; console.log(`[FACTURITAS] PDF matcheado por Op. ${nro} → pago #${pagoId}`); }
+      } else if (mCob) {
+        pagoId = parseInt(mCob[1]);
+        console.log(`[FACTURITAS] PDF matcheado por Cob. ${pagoId}`);
+      }
+    }
+
+    // 3) Último recurso: el pago pending más reciente
     if (!pagoId) {
       const [[row]] = await db.query(
         "SELECT id FROM pagos WHERE factura_ref='pending' ORDER BY id DESC LIMIT 1"
       );
       pagoId = row?.id;
+      if (pagoId) console.log(`[FACTURITAS] PDF recibido — fallback al último pending pagoId=${pagoId}`);
     }
+
     if (!pagoId) { console.warn('[FACTURITAS] PDF recibido pero no hay cobro pendiente'); return; }
+
+    // Marcar como procesado exitosamente recién aquí (download OK + pagoId encontrado)
+    if (msgId) {
+      _factMsgProcessed.add(msgId);
+      setTimeout(() => _factMsgProcessed.delete(msgId), 60000);
+    }
 
     const buf = Buffer.from(media.data, 'base64');
     const dir = path.join(__dirname, 'public', 'uploads', 'facturas');
@@ -2522,6 +2761,30 @@ function _buildWaClient(sid) {
     sess.ready = true; sess.qr = null;
     if (sid === 'default') { botReadyStatus = true; currentQR = null; }
     console.log(`[WA:${sid}] Conectado`);
+    // Cachear grupos al conectar
+    if (sid === 'default') setTimeout(async () => {
+      try {
+        const groups = await c.pupPage.evaluate(() => {
+          try {
+            const raw = window.require('WAWebCollections').Chat.getModelsArray();
+            return raw
+              .filter(ch => {
+                try {
+                  const idStr = ch.id?._serialized || '';
+                  return (idStr.endsWith('@g.us') || ch.isGroup === true) && (ch.name || ch.formattedTitle);
+                } catch(_) { return false; }
+              })
+              .map(ch => ({
+                id: ch.id._serialized,
+                name: ch.name || ch.formattedTitle || '',
+                participants: ch.groupMetadata?.participants?.length || 0
+              }));
+          } catch(e) { return []; }
+        });
+        _waGroupsCache = groups.filter(g => g.id && g.name).sort((a, b) => a.name.localeCompare(b.name));
+        console.log(`[WA] ${_waGroupsCache.length} grupos cacheados`);
+      } catch(e) { console.warn('[WA] pupPage.evaluate falló:', e.message); }
+    }, 3000);
   });
   c.on('disconnected', () => {
     sess.ready = false;
@@ -2629,6 +2892,8 @@ async function startApp() {
     console.log('[BOT] Inicializando base de datos...');
     await initializeDatabase();
     await loadConfigFromDB(); // cargar API keys de DB si no están en .env
+    // Inyectar pool en afip-service para persistir tokens entre reinicios
+    require('./afip-service').setDb(await getPool());
 
     // 1. Levantar Servidor Web Express
     app.listen(PORT, () => {
@@ -2914,18 +3179,34 @@ Si no hay evidencia suficiente → "encontrado": false, "chofer_responsable": nu
       } catch (err) { res.status(500).json({ message: err.message }); }
     });
 
-    // Listar grupos de WhatsApp
+    // Listar grupos de WhatsApp (usa cache; fuerza refresh con ?refresh=1)
     app.get('/api/whatsapp/groups', requireAuth, async (req, res) => {
       if (!botReadyStatus) return res.status(503).json({ message: 'Bot no conectado' });
+      if (_waGroupsCache.length && !req.query.refresh) return res.json(_waGroupsCache);
+      const client = waSessions.get('default').client;
       try {
-        const client = waSessions.get('default').client;
-        const chats = await client.getChats();
-        const groups = chats
-          .filter(c => c.isGroup)
-          .map(c => ({ id: c.id._serialized, name: c.name, participants: c.participants?.length || 0 }))
-          .sort((a, b) => a.name.localeCompare(b.name));
-        res.json(groups);
-      } catch (err) { res.status(500).json({ message: err.message }); }
+        const groups = await client.pupPage.evaluate(() => {
+          try {
+            const raw = window.require('WAWebCollections').Chat.getModelsArray();
+            return raw
+              .filter(ch => {
+                try {
+                  const idStr = ch.id?._serialized || '';
+                  return (idStr.endsWith('@g.us') || ch.isGroup === true) && (ch.name || ch.formattedTitle);
+                } catch(_) { return false; }
+              })
+              .map(ch => ({
+                id: ch.id._serialized,
+                name: ch.name || ch.formattedTitle || '',
+                participants: ch.groupMetadata?.participants?.length || 0
+              }));
+          } catch(e) { return []; }
+        });
+        _waGroupsCache = groups.filter(g => g.id && g.name).sort((a, b) => a.name.localeCompare(b.name));
+        res.json(_waGroupsCache);
+      } catch (err) {
+        res.status(500).json({ message: err?.message || 'Error al obtener grupos' });
+      }
     });
 
     // Enviar mensaje a múltiples grupos/chats
@@ -2977,8 +3258,20 @@ function _attachDefaultBotHandlers(client) {
         if (message.type === 'notification_template' || message.type === 'notification') return;
 
         const body = (message.body || '').trim();
-        const fromBare = message.from.replace(/[@:].*/,'').replace(/[^\d]/g,'');
-        console.log(`[BOT][Chat] Mensaje de ${message.from} (bare:${fromBare}) hasMedia:${message.hasMedia} type:${message.type}`);
+        // @lid = nuevo formato WA — el "from" no es el número real, hay que resolverlo
+        let fromBare = message.from.replace(/[@:].*/,'').replace(/[^\d]/g,'');
+        if (message.from.endsWith('@lid')) {
+          try {
+            const contact = await message.getContact();
+            // id.user tiene el número real; contact.number puede devolver el LID
+            const resolved = (contact.id?.user || contact.number || '').replace(/\D/g,'');
+            if (resolved) { fromBare = resolved; }
+            console.log(`[BOT][LID] Resolviendo @lid → id.user=${contact.id?.user} number=${contact.number} → fromBare=${fromBare}`);
+          } catch(lidErr) {
+            console.warn('[BOT][LID] No se pudo resolver @lid:', lidErr.message);
+          }
+        }
+        console.log(`[BOT][Chat] Mensaje de ${message.from} (bare:${fromBare}) hasMedia:${message.hasMedia} type:${message.type} body="${body.slice(0,40)}"`);
 
         // Interceptar mensajes del bot CABA y encolarlo para el endpoint
         if (_cabaBotChatId && message.from === _cabaBotChatId && body) {
@@ -2988,39 +3281,85 @@ function _attachDefaultBotHandlers(client) {
         if (body.toLowerCase() === '!ping') { await message.reply('pong'); return; }
 
         const isFact = _isFacturitas(fromBare);
-        console.log(`[BOT][DBG] isFact=${isFact} hasMedia=${message.hasMedia}`);
+        console.log(`[BOT][DBG] from=${message.from} bare=${fromBare} isFact=${isFact} hasMedia=${message.hasMedia} type=${message.type} body="${body.slice(0,40)}"`);
 
-        // Captura de PDF de Facturitas para vincular a una cobranza
-        if (isFact && message.hasMedia) {
+        // Captura de PDF de Facturitas — acepta document e image (wwebjs puede reportar tipos distintos según versión)
+        if (isFact && message.hasMedia && message.type !== 'sticker') {
           _captureFacturaPDF(message).catch(e => console.error('[FACTURITAS] capture error:', e.message));
           return;
         }
         if (isFact) return; // otros mensajes de Facturitas: ignorar
 
         // Imagen recibida de un chofer → detectar si es comprobante de transferencia
-        if (message.hasMedia && !message.isStatus && !isFact) {
+        if (message.hasMedia && !message.isStatus && !isFact && !message.from.includes('@g.us')) {
           try {
-            const media = await message.downloadMedia();
-            const isImg = media && (media.mimetype || '').startsWith('image/');
-            if (!isImg) return;
+            // downloadMedia con retry (wwebjs puede fallar con error transitorio)
+            let media = null;
+            // Intento 1: downloadMedia estándar
+            try {
+              media = await message.downloadMedia();
+            } catch(_e) {
+              console.log(`[WA-BOT] downloadMedia estándar falló: ${String(_e?.message || _e)}`);
+            }
 
-            // Solo mensajes directos (no grupos)
-            if (message.from.includes('@g.us')) return;
+            // Intento 2: para mensajes @lid, los datos pueden estar en _data.body (base64 directo)
+            if (!media && message.from.endsWith('@lid')) {
+              try {
+                const raw = message._data?.body || message._data?.mediaData?.body;
+                const mt  = message._data?.mimetype || message._data?.mediaData?.mimetype || 'image/jpeg';
+                if (raw) {
+                  media = { data: raw, mimetype: mt, filename: null };
+                  console.log(`[WA-BOT] Media obtenido de _data.body (lid fallback), mime=${mt}`);
+                }
+              } catch(_e2) {
+                console.log(`[WA-BOT] Fallback _data.body falló: ${String(_e2?.message || _e2)}`);
+              }
+            }
 
-            // Buscar chofer por teléfono (normalizado: últimos 10 dígitos)
-            const db = await getPool();
-            const bare10 = fromBare.replace(/\D/g,'').slice(-10);
-            const [choferes] = await db.query('SELECT id, nombre FROM choferes WHERE telefono IS NOT NULL');
-            const chofer = choferes.find(c => {
-              const tel = String(c.telefono).replace(/\D/g,'');
-              return tel.slice(-10) === bare10;
-            });
-            if (!chofer) {
-              console.log(`[WA-BOT] Imagen de número desconocido: ${fromBare}`);
+            // Intento 3: retry con delay
+            if (!media) {
+              await new Promise(r => setTimeout(r, 3000));
+              try {
+                media = await message.downloadMedia();
+                console.log(`[WA-BOT] downloadMedia retry OK`);
+              } catch(_e3) {
+                console.log(`[WA-BOT] downloadMedia retry falló: ${String(_e3?.message || _e3)}`);
+              }
+            }
+
+            if (!media) {
+              console.log(`[WA-BOT] No se pudo descargar media de ${fromBare} — abortando`);
+              return;
+            }
+            const mime = (media?.mimetype || '');
+            console.log(`[WA-BOT] Media descargado: mime=${mime} size=${media.data?.length}`);
+            const esImagen = mime.startsWith('image/') || mime === 'application/octet-stream' ||
+                             ['image/jpeg','image/png','image/webp','image/heic'].includes(mime);
+            const esPdf = mime === 'application/pdf';
+            if (!esImagen && !esPdf) {
+              console.log(`[WA-BOT] Media recibido pero no es imagen ni PDF: ${mime}`);
               return;
             }
 
-            // Analizar con IA si es comprobante de transferencia
+            // Buscar chofer por teléfono (últimos 10 dígitos, tolerante a @lid/@c.us)
+            const db = await getPool();
+            const bare10 = fromBare.replace(/\D/g,'').slice(-10);
+            const [choferes] = await db.query('SELECT id, nombre, telefono FROM choferes WHERE telefono IS NOT NULL');
+            console.log(`[WA-BOT] Buscando bare10=${bare10} entre ${choferes.length} choferes:`);
+            choferes.forEach(c => {
+              const t10 = String(c.telefono).replace(/\D/g,'').slice(-10);
+              console.log(`  id=${c.id} tel="${c.telefono}" t10=${t10} match=${t10===bare10}`);
+            });
+            const chofer = choferes.find(c => String(c.telefono).replace(/\D/g,'').slice(-10) === bare10);
+            if (!chofer) {
+              console.log(`[WA-BOT] Imagen de número no registrado: ${fromBare} (bare10=${bare10})`);
+              return;
+            }
+            console.log(`[WA-BOT] Chofer identificado: ${chofer.nombre} (id=${chofer.id}), analizando imagen...`);
+
+            console.log(`[WA-COBRO] Imagen de ${chofer.nombre} — analizando con IA...`);
+
+            // Analizar con IA
             let aiData = null;
             try {
               const { extractFacturaData } = require('./ai');
@@ -3029,55 +3368,147 @@ function _attachDefaultBotHandlers(client) {
               console.warn('[WA-BOT] IA no pudo analizar imagen:', aiErr.message);
             }
 
-            // Determinar si es transferencia bancaria válida
-            const monto = parseFloat(String(aiData?.total || '').replace(/[^0-9.]/g, '')) || 0;
-            const esTransferencia = monto > 0 && (
-              aiData?.alias_destino || aiData?.cbu_destino ||
-              aiData?.nombre_destino || aiData?.nro_operacion ||
-              (aiData?.tipo_comprobante || '').toLowerCase().includes('transfer')
+            // Determinar si es transferencia válida
+            // Parseo de monto argentino: "50.000" (miles con punto) → 50000; "1.250,50" → 1250.50
+            const _rawMonto = String(aiData?.total || '').trim();
+            const monto = (() => {
+              let s = _rawMonto.replace(/[^0-9.,]/g, '');
+              if (!s) return 0;
+              // Si tiene coma → coma es decimal, puntos son miles: "1.250,50" → "1250.50"
+              if (s.includes(',')) return parseFloat(s.replace(/\./g, '').replace(',', '.')) || 0;
+              // Solo puntos: si el punto separa exactamente 3 dígitos al final → miles: "50.000" → 50000
+              if (/\.\d{3}$/.test(s)) return parseFloat(s.replace(/\./g, '')) || 0;
+              return parseFloat(s) || 0;
+            })();
+            const nroOp = (aiData?.nro_operacion || '').trim();
+            const codId = (aiData?.codigo_identificacion || '').trim();
+            const tipoComp = (aiData?.tipo_comprobante || '').toLowerCase();
+            const esTransferencia = aiData?.es_transferencia === 'true' || (
+              monto > 0 && (
+                nroOp || codId ||
+                aiData?.cbu_destino || aiData?.alias_destino || aiData?.nombre_destino ||
+                tipoComp.includes('transfer') || tipoComp.includes('comprobante') ||
+                tipoComp.includes('pago') || tipoComp.includes('envío') || tipoComp.includes('envio')
+              )
             );
 
-            if (!esTransferencia) {
-              console.log(`[WA-BOT] Imagen de ${chofer.nombre} no parece comprobante de transferencia (monto=${monto})`);
+            console.log(`[WA-COBRO] IA → monto=${monto} tipo="${aiData?.tipo_comprobante}" es_transferencia=${aiData?.es_transferencia} op=${nroOp}`);
+
+            if (!esTransferencia || monto <= 0) {
+              console.log(`[WA-BOT] Imagen de ${chofer.nombre} no reconocida como transferencia (monto=${monto} es_trf=${aiData?.es_transferencia})`);
+              await message.reply(`Gracias ${chofer.nombre.split(' ')[0]} 👋`);
               return;
             }
 
-            // Guardar imagen
-            const ext   = media.mimetype.split('/')[1]?.split(';')[0] || 'jpg';
-            const fname = `cobro_wa_${chofer.id}_${Date.now()}.${ext}`;
-            const dir   = path.join(__dirname, 'public', 'uploads', 'pagos', String(chofer.id));
-            fs.mkdirSync(dir, { recursive: true });
-            fs.writeFileSync(path.join(dir, fname), Buffer.from(media.data, 'base64'));
-            const comprobante_url = `/uploads/pagos/${chofer.id}/${fname}`;
-
-            // Determinar tipo de cobro según monto
-            // $50.000 exactos → alquiler; otro → pendiente de imputar
-            const modalidadBase = 50000;
-            let detalle = 'Comprobante recibido por WhatsApp — pendiente de imputar';
-            if (monto === modalidadBase) {
-              detalle = 'Alquiler — recibido por WhatsApp';
+            // Anti-duplicado
+            if (nroOp) {
+              const [dupRows] = await db.query(`SELECT id FROM pagos WHERE nro_transaccion = ? LIMIT 1`, [nroOp]);
+              if (dupRows.length > 0) {
+                await message.reply(`⚠️ Este comprobante ya fue registrado (Op. ${nroOp} → Cobro #${dupRows[0].id}).\nSi creés que es un error, contactá a la administración.`);
+                return;
+              }
             }
 
-            // Datos extra del comprobante
-            const destino  = [aiData?.nombre_destino, aiData?.alias_destino].filter(Boolean).join(' / ');
-            const nroOp    = aiData?.nro_operacion || aiData?.codigo_identificacion || '';
-            if (destino) detalle += ` | Destino: ${destino}`;
-            if (nroOp)   detalle += ` | Op: ${nroOp}`;
+            // Guardar comprobante — PDF sin procesamiento, imagen con sharp
+            const dir = path.join(__dirname, 'public', 'uploads', 'pagos', String(chofer.id));
+            fs.mkdirSync(dir, { recursive: true });
+            let fileBuffer = Buffer.from(media.data, 'base64');
+            const ext = esPdf ? 'pdf' : 'jpg';
+            const fname = `cobro_wa_${chofer.id}_${Date.now()}.${ext}`;
+            if (!esPdf) {
+              try {
+                if (sharp) {
+                  const meta = await sharp(fileBuffer).metadata();
+                  const targetW = Math.max((meta.width || 0), 2400);
+                  fileBuffer = await sharp(fileBuffer)
+                    .rotate()
+                    .resize({ width: targetW, withoutEnlargement: false })
+                    .sharpen({ sigma: 1.2, m1: 0.5, m2: 2.5 })
+                    .normalise()
+                    .jpeg({ quality: 95, mozjpeg: true })
+                    .toBuffer();
+                }
+              } catch(_se) { /* si sharp falla guardamos el original */ }
+            }
+            fs.writeFileSync(path.join(dir, fname), fileBuffer);
+            const comprobante_url = `/uploads/pagos/${chofer.id}/${fname}`;
 
-            const hoy = new Date().toISOString().slice(0, 19).replace('T', ' ');
+            // Buscar cuenta destino por CBU/alias
+            let cuenta_id = null;
+            const cbuDestino   = (aiData?.cbu_destino || '').replace(/\D/g, '');
+            const aliasDestino = (aiData?.alias_destino || '').trim().toLowerCase();
+            if (cbuDestino || aliasDestino) {
+              const [cuentaRows] = await db.query(
+                `SELECT id FROM cuentas WHERE REPLACE(cbu_cvu,' ','') = ? OR LOWER(alias) = ? LIMIT 1`,
+                [cbuDestino || '__', aliasDestino || '__']
+              );
+              if (cuentaRows.length) cuenta_id = cuentaRows[0].id;
+            }
+
+            // Detalle legible
+            const parteOrigen  = [aiData?.nombre_origen, aiData?.banco_origen].filter(Boolean).join(' / ');
+            const parteDestino = [aiData?.nombre_destino, aliasDestino || aiData?.banco_destino].filter(Boolean).join(' / ');
+            let detalle = `Transferencia WA${parteOrigen ? ' de ' + parteOrigen : ''}${parteDestino ? ' → ' + parteDestino : ''}`;
+            if (nroOp) detalle += ` | Op: ${nroOp}`;
+            if (codId) detalle += ` | ID: ${codId}`;
+
+            // Fecha en hora local (sin toISOString que convierte a UTC)
+            const _nowLocal = d => {
+              const p = n => String(n).padStart(2,'0');
+              return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+            };
+            const fechaComp = aiData?.fecha_emision
+              ? _nowLocal(new Date(aiData.fecha_emision))
+              : _nowLocal(new Date());
+
             const [ins] = await db.query(
-              `INSERT INTO pagos (chofer_id, fecha, monto, tipo, medio_pago, detalle, comprobante_url, nro_transaccion)
-               VALUES (?, ?, ?, 'ingreso', 'Transferencia', ?, ?, ?)`,
-              [chofer.id, hoy, monto, detalle, comprobante_url, nroOp || null]
+              `INSERT INTO pagos (chofer_id, cuenta_id, fecha, monto, tipo, concepto, medio_pago, detalle, comprobante_url, nro_transaccion)
+               VALUES (?, ?, ?, ?, 'ingreso', 'Rendición', 'Transferencia', ?, ?, ?)`,
+              [chofer.id, cuenta_id, fechaComp, monto, detalle, comprobante_url, nroOp || codId || null]
             );
 
-            console.log(`[WA-COBRO] Cobro #${ins.insertId} de $${monto} registrado para ${chofer.nombre}`);
+            console.log(`[WA-COBRO] Cobro #${ins.insertId} $${monto} — ${chofer.nombre} (op=${nroOp || codId})`);
 
-            const resumen = monto === modalidadBase
-              ? `✅ Alquiler $${monto.toLocaleString('es-AR')} registrado.`
-              : `✅ Transferencia de $${monto.toLocaleString('es-AR')} registrada. Pendiente de imputar (alquiler / peajes / ambos).`;
-            await message.reply(`${resumen}\nCobro #${ins.insertId} — gracias ${chofer.nombre.split(' ')[0]}!`);
-          } catch (imgErr) { console.error('[WA-COBRO] Error procesando imagen:', imgErr.message); }
+            // Auto-facturación provisoria: solo transferencias a seba.stasiu.buepp
+            if (aliasDestino === 'seba.stasiu.buepp') {
+              try {
+                const waClient = waSessions.get('default').client;
+                const chatId   = await _resolveWaChatId(waClient, FACTURITAS_NUMBER);
+                const pagoId   = ins.insertId;
+                _pendingFactura = { pagoId, ts: Date.now() };
+                await db.query("UPDATE pagos SET factura_ref='pending' WHERE id=?", [pagoId]);
+                const svcName = nroOp ? `Alquiler (Op. ${nroOp})` : `Alquiler (Cob. ${pagoId})`;
+                const _wait = (ms = 12000) => new Promise(resolve => {
+                  const h = msg => {
+                    const b = msg.from.replace(/[@:].*/,'').replace(/[^\d]/g,'');
+                    if (_isFacturitas(b)) { waClient.off('message', h); waClient.off('message_create', h); clearTimeout(t); resolve(msg); }
+                  };
+                  const t = setTimeout(() => { waClient.off('message', h); waClient.off('message_create', h); resolve(null); }, ms);
+                  waClient.on('message', h);
+                  waClient.on('message_create', h);
+                });
+                await waClient.sendMessage(chatId, 'Crear Factura Rápida');
+                await _wait();
+                await waClient.sendMessage(chatId, svcName);
+                await _wait();
+                await waClient.sendMessage(chatId, String(Math.round(monto)));
+                await _wait();
+                await waClient.sendMessage(chatId, 'Confirmar');
+                console.log(`[WA-COBRO] Auto-facturación Facturitas iniciada para cobro #${pagoId}`);
+              } catch (fErr) {
+                console.error('[WA-COBRO] Auto-facturación falló:', fErr.message);
+              }
+            }
+
+            const montoFmt = monto.toLocaleString('es-AR', { minimumFractionDigits: 0 });
+            await message.reply(
+              `✅ Transferencia registrada, ${chofer.nombre.split(' ')[0]}.\n` +
+              `Monto: $${montoFmt}`
+            );
+          } catch (imgErr) {
+            console.error('[WA-COBRO] Error procesando imagen:', imgErr.message);
+            try { await message.reply('⚠️ Hubo un error procesando tu imagen. Intentá de nuevo en unos segundos.'); } catch(_) {}
+          }
         }
       } catch (err) {
         console.error('[BOT] Error al procesar mensaje:', err.message);
@@ -3090,7 +3521,7 @@ function _attachDefaultBotHandlers(client) {
       try {
         if (message.fromMe) return; // ignorar mensajes propios
         const fromBare = message.from.replace(/[@:].*/,'').replace(/[^\d]/g,'');
-        if (_isFacturitas(fromBare) && message.hasMedia) {
+        if (_isFacturitas(fromBare) && message.hasMedia && message.type !== 'sticker') {
           console.log('[FACTURITAS][message_create] PDF detectado como fallback');
           _captureFacturaPDF(message).catch(e => console.error('[FACTURITAS] fallback error:', e.message));
         }
@@ -3522,9 +3953,11 @@ app.get('/api/rendiciones', async (req, res) => {
              p.nro_transaccion, p.comprobante_url, p.detalle AS notas,
              p.factura_url, p.factura_ref,
              ch.nombre AS chofer_nombre,
-             ch.id AS chofer_id, NULL AS patente,
+             ch.id AS chofer_id, ch.modalidad AS chofer_modalidad,
+             NULL AS patente,
              'pagos' AS _origen,
-             cu.alias AS cuenta_alias, cu.id AS cuenta_id_val
+             cu.alias AS cuenta_alias, cu.id AS cuenta_id_val,
+             COALESCE((SELECT SUM(pc.monto) FROM pago_conceptos pc WHERE pc.pago_id = p.id), 0) AS imputado_total
       FROM pagos p
       JOIN choferes ch ON p.chofer_id = ch.id
       LEFT JOIN cuentas cu ON p.cuenta_id = cu.id
@@ -4034,6 +4467,330 @@ app.post('/api/peajes/import-excel', memUpload.single('file'), requireAuth, asyn
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
+// ── AFIP: Consulta de contribuyente por CUIT (Padrón A5 — autorizado) ────────
+// ══ AFIP / ARCA — Contribuyentes (multi-CUIT) ════════════════════════════════
+
+const TIPOS_CBTE = {1:'Factura A',2:'Nota Cré. A',3:'Nota Déb. A',6:'Factura B',7:'Nota Cré. B',
+  8:'Nota Déb. B',11:'Factura C',12:'Nota Cré. C',13:'Nota Déb. C',51:'Factura M',
+  81:'Tique Factura A',82:'Tique Factura B',201:'Factura de Crédito A',206:'Factura de Crédito B'};
+
+// ── CRUD contribuyentes ───────────────────────────────────────────────────────
+app.get('/api/afip/contribuyentes', requireAuth, async (req, res) => {
+  const db = await getPool();
+  const [rows] = await db.query(
+    `SELECT id,cuit,nombre,punto_venta,production,cert_vence,activo,notas,
+            IF(cert_pem IS NOT NULL,1,0) AS tiene_cert,
+            IF(key_pem  IS NOT NULL,1,0) AS tiene_key
+     FROM afip_contribuyentes ORDER BY nombre`);
+  res.json(rows);
+});
+
+app.post('/api/afip/contribuyentes', requireAuth, async (req, res) => {
+  try {
+    const { cuit, nombre, punto_venta = 1, production = 0, notas, concepto_base } = req.body;
+    if (!cuit || !nombre) return res.status(400).json({ message: 'cuit y nombre requeridos' });
+    const db = await getPool();
+    const [r] = await db.query(
+      `INSERT INTO afip_contribuyentes (cuit,nombre,punto_venta,production,notas,concepto_base) VALUES (?,?,?,?,?,?)`,
+      [cuit, nombre, punto_venta, production ? 1 : 0, notas || null, concepto_base || null]);
+    res.json({ ok: true, id: r.insertId });
+  } catch(err) {
+    if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ message: 'Ya existe un contribuyente con ese CUIT' });
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.put('/api/afip/contribuyentes/:id', requireAuth, async (req, res) => {
+  try {
+    const { nombre, punto_venta, production, notas, activo, wscdc_url, concepto_base } = req.body;
+    const db = await getPool();
+    await db.query(
+      `UPDATE afip_contribuyentes SET nombre=?,punto_venta=?,production=?,notas=?,activo=?,wscdc_url=?,concepto_base=? WHERE id=?`,
+      [nombre, punto_venta, production ? 1 : 0, notas || null, activo !== undefined ? activo : 1, wscdc_url || null, concepto_base || null, req.params.id]);
+    const { invalidateAfipInstance } = require('./afip-service');
+    const [[c]] = await db.query('SELECT cuit FROM afip_contribuyentes WHERE id=?', [req.params.id]);
+    if (c) invalidateAfipInstance(c.cuit);
+    res.json({ ok: true });
+  } catch(err) { res.status(500).json({ message: err.message }); }
+});
+
+app.delete('/api/afip/contribuyentes/:id', requireAuth, async (req, res) => {
+  const db = await getPool();
+  await db.query('UPDATE afip_contribuyentes SET activo=0 WHERE id=?', [req.params.id]);
+  res.json({ ok: true });
+});
+
+// Subir cert (.crt) o key (.key) de un contribuyente
+app.post('/api/afip/contribuyentes/:id/cert', requireAuth, memUpload.single('file'), async (req, res) => {
+  try {
+    const tipo = req.query.tipo; // 'cert' | 'key'
+    if (!['cert','key'].includes(tipo)) return res.status(400).json({ message: 'tipo debe ser cert o key' });
+    if (!req.file) return res.status(400).json({ message: 'Archivo requerido' });
+    const pem = req.file.buffer.toString('utf8').trim();
+    if (tipo === 'cert' && !pem.includes('CERTIFICATE')) return res.status(400).json({ message: 'El archivo no parece un certificado PEM válido' });
+    if (tipo === 'key'  && !pem.includes('PRIVATE KEY'))  return res.status(400).json({ message: 'El archivo no parece una clave privada PEM válida' });
+
+    const db = await getPool();
+    const col = tipo === 'cert' ? 'cert_pem' : 'key_pem';
+    let certVence = null;
+    if (tipo === 'cert') {
+      try {
+        const { execSync } = require('child_process');
+        const tmpFile = path.join(__dirname, 'certs', `tmp_${Date.now()}.crt`);
+        fs.writeFileSync(tmpFile, pem);
+        const out = execSync(`openssl x509 -noout -enddate -in "${tmpFile}"`, { encoding:'utf8', timeout:5000 }).trim();
+        fs.unlinkSync(tmpFile);
+        const dateStr = out.replace('notAfter=','');
+        if (dateStr) certVence = new Date(dateStr).toISOString().split('T')[0];
+      } catch {}
+    }
+    const sets = certVence ? `${col}=?, cert_vence=?` : `${col}=?`;
+    const vals = certVence ? [pem, certVence, req.params.id] : [pem, req.params.id];
+    await db.query(`UPDATE afip_contribuyentes SET ${sets} WHERE id=?`, vals);
+
+    const { invalidateAfipInstance } = require('./afip-service');
+    const [[c]] = await db.query('SELECT cuit FROM afip_contribuyentes WHERE id=?', [req.params.id]);
+    if (c) invalidateAfipInstance(c.cuit);
+    res.json({ ok: true, cert_vence: certVence });
+  } catch(err) { res.status(500).json({ message: err.message }); }
+});
+
+// Padrón A5: consulta de contribuyente
+app.get('/api/afip/contribuyente/:cuit', requireAuth, async (req, res) => {
+  try {
+    const { loadContrib, consultarContribuyente } = require('./afip-service');
+    const db = await getPool();
+    const contribId = req.query.contribuyente_id;
+    let contrib;
+    if (contribId) {
+      contrib = await loadContrib(db, contribId);
+    } else {
+      const [[first]] = await db.query(
+        `SELECT * FROM afip_contribuyentes WHERE activo=1 AND cert_pem IS NOT NULL AND key_pem IS NOT NULL LIMIT 1`);
+      if (!first) return res.status(503).json({ message: 'No hay contribuyentes AFIP configurados con certificado' });
+      contrib = first;
+    }
+    const cuit = req.params.cuit.replace(/[-\s]/g, '');
+    if (!/^\d{11}$/.test(cuit)) return res.status(400).json({ message: 'CUIT/CUIL inválido' });
+    const data = await consultarContribuyente(contrib, cuit);
+    if (!data) return res.status(404).json({ message: 'Contribuyente no encontrado en AFIP' });
+    res.json(data);
+  } catch(err) { console.error('[AFIP Padrón]', err.message); res.status(500).json({ message: err.message }); }
+});
+
+// ── ARCA: sync por contribuyente ──────────────────────────────────────────────
+async function _syncComprobantes(contrib, direccion, fechaDesde, fechaHasta) {
+  const db = await getPool();
+  const toDate = s => String(s||'').replace(/(\d{4})(\d{2})(\d{2})/,'$1-$2-$3').slice(0,10) || null;
+  let nuevos = 0;
+
+  const parseFecha = s => { if (!s) return null; const [d,m,y] = (s||'').split('/'); return y ? `${y}-${m}-${d}` : null; };
+  const parseImporte = s => parseFloat(String(s||'0').replace(/\./g,'').replace(',','.').replace(/[^\d.-]/g,'')) || 0;
+  const clave = process.env[`AFIP_CLAVE_${contrib.cuit}`];
+
+  if (direccion === 'emitido') {
+    if (!clave) {
+      console.warn(`[ARCA sync] ${contrib.cuit} emitido: sin clave fiscal en .env (AFIP_CLAVE_${contrib.cuit}), saltando`);
+    } else {
+      const { scrapearComprobantesEmitidos } = require('./scraper');
+      const lista = await scrapearComprobantesEmitidos(contrib.cuit, clave, fechaDesde, fechaHasta,
+        msg => console.log(`[ARCA sync] ${contrib.cuit} emitido: ${msg}`));
+      for (const item of lista) {
+        if (!item.tipo || !item.pto_venta) continue;
+        const tipoCod  = parseInt((item.tipo||'').split('-')[0].trim()) || 0;
+        const descTipo = (item.tipo||'').split('-').slice(1).join('-').trim() || `Tipo ${tipoCod}`;
+        const importe  = parseImporte(item.importe);
+        await db.query(`
+          INSERT INTO afip_comprobantes
+            (direccion,codigo_tipo,desc_tipo,pto_venta,nro_comprobante,fecha_cbte,
+             cuit_emisor,cuit_receptor,importe_total,raw_json)
+          VALUES (?,?,?,?,?,?,?,?,?,?)
+          ON DUPLICATE KEY UPDATE
+            importe_total=VALUES(importe_total),raw_json=VALUES(raw_json),synced_at=CURRENT_TIMESTAMP
+        `, ['emitido', tipoCod, descTipo, item.pto_venta, item.nro_comprobante,
+            parseFecha(item.fecha), contrib.cuit, item.denominacion_receptor||null,
+            importe, JSON.stringify(item)]);
+        nuevos++;
+      }
+    }
+  } else {
+    const clave = process.env[`AFIP_CLAVE_${contrib.cuit}`];
+    if (!clave) {
+      console.warn(`[ARCA sync] ${contrib.cuit} recibido: sin clave fiscal en .env (AFIP_CLAVE_${contrib.cuit}), saltando`);
+    } else {
+      const { scrapearComprobantesRecibidos } = require('./scraper');
+      const lista = await scrapearComprobantesRecibidos(contrib.cuit, clave, fechaDesde, fechaHasta,
+        msg => console.log(`[ARCA sync] ${contrib.cuit} recibido: ${msg}`));
+      for (const item of lista) {
+        if (!item.tipo || !item.numero) continue;
+        const [pvStr, nroStr] = (item.numero||'').split('-');
+        const pv  = parseInt((pvStr||'').replace(/\D/g,''))  || 0;
+        const nro = parseInt((nroStr||'').replace(/\D/g,'')) || 0;
+        const tipoCod = parseInt((item.tipo||'').split('-')[0].trim()) || 0;
+        const descTipo = (item.tipo||'').split('-').slice(1).join('-').trim() || `Tipo ${tipoCod}`;
+        const emisor  = String(item.cuit_emisor||'').replace(/[-\s]/g,'') || '0';
+        const importe = parseImporte(item.importe);
+        await db.query(`
+          INSERT INTO afip_comprobantes
+            (direccion,codigo_tipo,desc_tipo,pto_venta,nro_comprobante,fecha_cbte,
+             cuit_emisor,cuit_receptor,importe_total,raw_json)
+          VALUES (?,?,?,?,?,?,?,?,?,?)
+          ON DUPLICATE KEY UPDATE
+            importe_total=VALUES(importe_total),raw_json=VALUES(raw_json),synced_at=CURRENT_TIMESTAMP
+        `, ['recibido', tipoCod, descTipo, pv, nro,
+            parseFecha(item.fecha), emisor, contrib.cuit, importe, JSON.stringify(item)]);
+        nuevos++;
+      }
+    }
+  }
+
+  await db.query(`INSERT INTO afip_sync_log (direccion,fecha_desde,fecha_hasta,total_nuevos) VALUES (?,?,?,?)`,
+    [direccion, fechaDesde, fechaHasta, nuevos]);
+  return nuevos;
+}
+
+app.post('/api/arca/test-scraper', requireAuth, async (req, res) => {
+  try {
+    const { cuit, desde, hasta, direccion = 'emitido' } = req.body;
+    const clave = process.env[`AFIP_CLAVE_${cuit}`];
+    if (!clave) return res.status(400).json({ message: `Sin clave en .env para AFIP_CLAVE_${cuit}` });
+    const { scrapearComprobantesRecibidos, scrapearComprobantesEmitidos } = require('./scraper');
+    const fechaDesde = desde || new Date(Date.now() - 30*864e5).toISOString().split('T')[0];
+    const fechaHasta = hasta || new Date().toISOString().split('T')[0];
+    const fn = direccion === 'recibido' ? scrapearComprobantesRecibidos : scrapearComprobantesEmitidos;
+    const lista = await fn(cuit, clave, fechaDesde, fechaHasta,
+      msg => console.log(`[test-scraper] ${msg}`));
+    res.json({ ok: true, direccion, total: lista.length, lista });
+  } catch(e) { res.status(500).json({ message: e.message }); }
+});
+
+app.post('/api/arca/sync', requireAuth, async (req, res) => {
+  try {
+    const { contribuyente_id, direccion = 'ambos', desde, hasta } = req.body;
+    const db = await getPool();
+    const { loadContrib } = require('./afip-service');
+    let contribs = [];
+    if (contribuyente_id) {
+      contribs = [await loadContrib(db, contribuyente_id)];
+    } else {
+      const [all] = await db.query(
+        `SELECT * FROM afip_contribuyentes WHERE activo=1 AND cert_pem IS NOT NULL AND key_pem IS NOT NULL`);
+      contribs = all;
+    }
+    if (!contribs.length) return res.status(503).json({ message: 'No hay contribuyentes AFIP configurados con certificado' });
+
+    let fechaDesde = desde;
+    if (!fechaDesde) {
+      const [[last]] = await db.query(`SELECT MAX(fecha_hasta) AS last FROM afip_sync_log WHERE error IS NULL`);
+      if (last?.last) { const d = new Date(last.last); d.setDate(d.getDate()+1); fechaDesde = d.toISOString().split('T')[0]; }
+      else { const d = new Date(); d.setDate(d.getDate()-30); fechaDesde = d.toISOString().split('T')[0]; }
+    }
+    const fechaHasta = hasta || new Date().toISOString().split('T')[0];
+    const dirs = direccion === 'ambos' ? ['emitido','recibido'] : [direccion];
+    let total = 0;
+    for (const c of contribs)
+      for (const d of dirs) {
+        try { total += await _syncComprobantes(c, d, fechaDesde, fechaHasta); }
+        catch(e) {
+          if (e.message.includes('WSCDC') || e.message.includes('Invalid WSDL')) {
+            // WSCDC no disponible — skip silencioso
+          } else {
+            console.warn(`[ARCA sync] ${c.cuit} ${d}: ${e.message}`);
+          }
+        }
+      }
+    res.json({ ok: true, nuevos: total, desde: fechaDesde, hasta: fechaHasta });
+  } catch(err) { console.error('[ARCA sync]', err.message); res.status(500).json({ message: err.message }); }
+});
+
+app.get('/api/arca/comprobantes', requireAuth, async (req, res) => {
+  try {
+    const db = await getPool();
+    const { direccion = 'emitido', desde, hasta, tipo, cuit_emisor } = req.query;
+    const conds = ['direccion=?']; const vals = [direccion];
+    if (desde)       { conds.push('fecha_cbte>=?');  vals.push(desde); }
+    if (hasta)       { conds.push('fecha_cbte<=?');  vals.push(hasta); }
+    if (tipo)        { conds.push('codigo_tipo=?');  vals.push(parseInt(tipo)); }
+    if (cuit_emisor) { conds.push('cuit_emisor=?');  vals.push(cuit_emisor); }
+    const [rows] = await db.query(
+      `SELECT id,direccion,codigo_tipo,desc_tipo,pto_venta,nro_comprobante,fecha_cbte,
+              fecha_vto_pago,cuit_emisor,cuit_receptor,razon_social,
+              importe_total,importe_iva,cae,cae_vto,estado,pdf_url
+       FROM afip_comprobantes WHERE ${conds.join(' AND ')}
+       ORDER BY fecha_cbte DESC, nro_comprobante DESC LIMIT 500`, vals);
+    res.json(rows);
+  } catch(err) { res.status(500).json({ message: err.message }); }
+});
+
+app.get('/api/arca/sync-info', requireAuth, async (req, res) => {
+  try {
+    const db = await getPool();
+    const [[row]] = await db.query(`SELECT MAX(synced_at) AS last_sync, MAX(fecha_hasta) AS last_fecha FROM afip_sync_log WHERE error IS NULL`);
+    res.json(row);
+  } catch(err) { res.status(500).json({ message: err.message }); }
+});
+
+app.post('/api/arca/comprobantes/:id/pdf', requireAuth, memUpload.single('pdf'), async (req, res) => {
+  try {
+    if (!req.file || req.file.mimetype !== 'application/pdf') return res.status(400).json({ message: 'Se requiere un PDF' });
+    const db = await getPool();
+    const [[row]] = await db.query('SELECT id FROM afip_comprobantes WHERE id=?', [req.params.id]);
+    if (!row) return res.status(404).json({ message: 'Comprobante no encontrado' });
+    const dir = path.join(__dirname, 'public', 'uploads', 'facturas');
+    fs.mkdirSync(dir, { recursive: true });
+    const fname = `arca_${req.params.id}_${Date.now()}.pdf`;
+    fs.writeFileSync(path.join(dir, fname), req.file.buffer);
+    await db.query('UPDATE afip_comprobantes SET pdf_url=? WHERE id=?', [`/uploads/facturas/${fname}`, req.params.id]);
+    res.json({ ok: true, pdf_url: `/uploads/facturas/${fname}` });
+  } catch(err) { res.status(500).json({ message: err.message }); }
+});
+
+// ── Facturar una cobranza directo via AFIP (multi-contribuyente) ──────────────
+app.post('/api/pagos/:id/facturar-afip', requireAuth, async (req, res) => {
+  const pagoId = parseInt(req.params.id);
+  try {
+    const db = await getPool();
+    const [[pago]] = await db.query('SELECT * FROM pagos WHERE id=?', [pagoId]);
+    if (!pago) return res.status(404).json({ message: 'Cobranza no encontrada' });
+    if (pago.factura_url) return res.status(409).json({ message: 'Esta cobranza ya tiene factura emitida' });
+
+    const { loadContrib, emitirFactura } = require('./afip-service');
+
+    // Resolver contribuyente: cuenta → propietario (persona) → afip_contribuyentes por CUIL/CUIT
+    let contribuyente_id = req.body?.contribuyente_id;
+    if (!contribuyente_id && pago.cuenta_id) {
+      const [[autoContrib]] = await db.query(`
+        SELECT ac.id
+        FROM cuentas c
+        JOIN personas pe ON pe.id = c.persona_id
+        JOIN afip_contribuyentes ac
+          ON REPLACE(REPLACE(ac.cuit, '-', ''), ' ', '') = REPLACE(REPLACE(pe.cuil, '-', ''), ' ', '')
+        WHERE c.id = ? AND ac.activo = 1 AND ac.cert_pem IS NOT NULL AND ac.key_pem IS NOT NULL
+        LIMIT 1
+      `, [pago.cuenta_id]);
+      if (autoContrib) contribuyente_id = autoContrib.id;
+    }
+    if (!contribuyente_id) return res.status(400).json({ message: 'No se encontró contribuyente AFIP para la cuenta. Seleccionalo manualmente.' });
+    const contrib = await loadContrib(db, contribuyente_id);
+
+    const monto        = parseFloat(pago.monto_total || pago.monto || 0);
+    const ref          = pago.nro_transaccion || pago.codigo_identificacion || `Cob.${pagoId}`;
+    const conceptoBase = contrib.concepto_base || 'Alquiler vehículo';
+    const result       = await emitirFactura(contrib, { monto, concepto: `${conceptoBase} (Op. ${ref})`, ref });
+
+    const nroFmt = `${String(result.punto_venta).padStart(5,'0')}-${String(result.nro_comprobante).padStart(8,'0')}`;
+    await db.query(
+      `UPDATE pagos SET factura_ref='afip', factura_cae=?, factura_cae_vto=?,
+        factura_tipo='Factura B', factura_numero=?, factura_fecha=CURDATE() WHERE id=?`,
+      [result.cae, result.cae_vto, nroFmt, pagoId]);
+
+    await registrarAuditoria(req, 'pagos', 'afip-facturar', pagoId,
+      `Factura B emitida — CUIT ${result.cuit_emisor} (${result.nombre_emisor}) · CAE ${result.cae} · ${nroFmt}`);
+
+    res.json({ ok: true, cae: result.cae, cae_vto: result.cae_vto, nro: result.nro_comprobante, emisor: result.nombre_emisor });
+  } catch(err) { console.error('[AFIP facturar]', err.message); res.status(500).json({ message: err.message }); }
+});
+
 // ── Facturar una cobranza via Facturitas bot ─────────────────────────────────
 app.post('/api/pagos/:id/facturar', requireAuth, async (req, res) => {
   const pagoId = parseInt(req.params.id);
@@ -4052,14 +4809,28 @@ app.post('/api/pagos/:id/facturar', requireAuth, async (req, res) => {
     await db.query("UPDATE pagos SET factura_ref='pending' WHERE id=?", [pagoId]);
     _pendingFactura = { pagoId, ts: Date.now() };
 
+    // Auto-cancelar si Facturitas no envía el PDF en 10 minutos
+    setTimeout(async () => {
+      try {
+        const [[row]] = await db.query("SELECT factura_ref FROM pagos WHERE id=?", [pagoId]);
+        if (row?.factura_ref === 'pending') {
+          await db.query("UPDATE pagos SET factura_ref=NULL WHERE id=?", [pagoId]);
+          if (_pendingFactura?.pagoId === pagoId) _pendingFactura = null;
+          console.warn(`[FACTURITAS] Timeout 10min — factura_ref reseteada para pago #${pagoId}`);
+        }
+      } catch(_) {}
+    }, 10 * 60 * 1000);
+
     // Esperar respuesta del bot Facturitas (timeout fallback)
-    const _waitFacturitas = (ms = 9000) => new Promise(resolve => {
+    // Usa la misma normalización del handler principal para soportar @lid, @c.us y @s.whatsapp.net
+    const _waitFacturitas = (ms = 12000) => new Promise(resolve => {
       const handler = msg => {
-        const bare = msg.from.replace('@c.us','').replace('@s.whatsapp.net','');
-        if (_isFacturitas(bare)) { client.off('message', handler); clearTimeout(t); resolve(msg); }
+        const bare = msg.from.replace(/[@:].*/,'').replace(/[^\d]/g,'');
+        if (_isFacturitas(bare)) { client.off('message', handler); client.off('message_create', handler); clearTimeout(t); resolve(msg); }
       };
-      const t = setTimeout(() => { client.off('message', handler); resolve(null); }, ms);
+      const t = setTimeout(() => { client.off('message', handler); client.off('message_create', handler); resolve(null); }, ms);
       client.on('message', handler);
+      client.on('message_create', handler);
     });
 
     // Flujo: Crear Factura Rápida → esperar → Alquiler → esperar → monto → esperar → Confirmar
@@ -4076,8 +4847,66 @@ app.post('/api/pagos/:id/facturar', requireAuth, async (req, res) => {
     res.json({ ok: true, message: 'Factura solicitada. El PDF se vinculará automáticamente cuando llegue.' });
   } catch (err) {
     _pendingFactura = null;
+    // Frame detached = WhatsApp Web recargó su página durante la operación
+    if (err.message?.includes('detached Frame') || err.message?.includes('Execution context was destroyed')) {
+      botReadyStatus = false;
+      // Resetear el pending en DB para que se pueda reintentar
+      try { const db2 = await getPool(); await db2.query("UPDATE pagos SET factura_ref=NULL WHERE id=? AND factura_ref='pending'", [pagoId]); } catch(_) {}
+      return res.status(503).json({ message: 'WhatsApp Web se desconectó durante el envío. Reconectá el bot en Credenciales y volvé a intentar.' });
+    }
     res.status(500).json({ message: err.message });
   }
+});
+
+// Buscar último PDF de Facturitas en historial WA y vincularlo al pago
+app.post('/api/pagos/:id/factura-buscar-wa', requireAuth, async (req, res) => {
+  const pagoId = parseInt(req.params.id);
+  console.log(`[FACTURITAS] buscar-wa solicitado para pago #${pagoId} — botReady=${botReadyStatus}`);
+  try {
+    if (!botReadyStatus) return res.status(503).json({ message: 'WhatsApp no conectado' });
+    // Usar el último PDF recibido por el bot (fetchMessages falla con cuentas business en wwebjs)
+    // Recuperar desde memoria; si no está (ej: reinicio), leer del disco
+    if (!_lastPdfFacturitas) {
+      try {
+        const _lpPath = path.join(__dirname, 'public', 'uploads', 'facturas', '_last_facturitas.pdf');
+        if (fs.existsSync(_lpPath)) {
+          const buf = fs.readFileSync(_lpPath);
+          const stat = fs.statSync(_lpPath);
+          _lastPdfFacturitas = { data: buf.toString('base64'), mimetype: 'application/pdf', ts: stat.mtimeMs };
+          console.log(`[FACTURITAS] buscar-wa: _lastPdfFacturitas recuperado desde disco`);
+        }
+      } catch(_lpErr) { console.warn('[FACTURITAS] No se pudo leer last PDF de disco:', _lpErr.message); }
+    }
+    if (!_lastPdfFacturitas) return res.status(404).json({ message: 'No hay PDF reciente de Facturitas en memoria. Esperá que llegue el PDF y volvé a intentar.' });
+    const agoMin = Math.round((Date.now() - _lastPdfFacturitas.ts) / 60000);
+    console.log(`[FACTURITAS] buscar-wa usando _lastPdfFacturitas (hace ${agoMin} min)`);
+    const media = { data: _lastPdfFacturitas.data, mimetype: _lastPdfFacturitas.mimetype };
+
+    const db  = await getPool();
+    const buf = Buffer.from(media.data, 'base64');
+    const dir = path.join(__dirname, 'public', 'uploads', 'facturas');
+    fs.mkdirSync(dir, { recursive: true });
+    const fname       = `factura_${pagoId}_${Date.now()}.pdf`;
+    fs.writeFileSync(path.join(dir, fname), buf);
+    const factura_url = `/uploads/facturas/${fname}`;
+    await db.query("UPDATE pagos SET factura_url=?, factura_ref=NULL WHERE id=?", [factura_url, pagoId]);
+    if (_pendingFactura?.pagoId === pagoId) _pendingFactura = null;
+    console.log(`[FACTURITAS] PDF recuperado de historial WA → pago #${pagoId}`);
+    res.json({ ok: true, factura_url });
+  } catch(err) {
+    console.error('[FACTURITAS] buscar-wa error:', err.message, err.stack?.split('\n')[1] || '');
+    res.status(500).json({ message: err.message || String(err) });
+  }
+});
+
+// Cancelar estado "pending" de factura (Facturitas no respondió)
+app.delete('/api/pagos/:id/factura-pending', requireAuth, async (req, res) => {
+  try {
+    const db = await getPool();
+    await db.query("UPDATE pagos SET factura_ref=NULL WHERE id=? AND factura_ref='pending'", [req.params.id]);
+    if (_pendingFactura?.pagoId === parseInt(req.params.id)) _pendingFactura = null;
+    res.json({ ok: true });
+  } catch(err) { res.status(500).json({ message: err.message }); }
 });
 
 // Subir factura PDF manualmente a un cobro (usa memoryStorage para evitar problemas con req.params en diskStorage)
@@ -4514,6 +5343,46 @@ app.post('/api/upload/turno-foto', memUpload.single('file'), async (req, res) =>
     const fname = `foto_${Date.now()}.${ext}`;
     fs.writeFileSync(pathM.join(dir, fname), req.file.buffer);
     res.json({ url: `/uploads/turnos/${fname}` });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// Upload comprobante de pago de multa
+app.post('/api/upload/multa-foto', memUpload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'Sin archivo' });
+    const pathM = require('path'), fs = require('fs');
+    const dir = pathM.join(__dirname, 'public', 'uploads', 'multas');
+    fs.mkdirSync(dir, { recursive: true });
+    const ext = req.file.originalname.split('.').pop() || 'pdf';
+    const fname = `pago_${Date.now()}.${ext}`;
+    fs.writeFileSync(pathM.join(dir, fname), req.file.buffer);
+    res.json({ url: `/uploads/multas/${fname}` });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// Verificar pago en Mercado Pago por ID de operación
+app.get('/api/mp/payment/:id', async (req, res) => {
+  try {
+    const token = process.env.MP_ACCESS_TOKEN;
+    if (!token) return res.status(500).json({ message: 'MP_ACCESS_TOKEN no configurado' });
+    const mpRes = await fetch(`https://api.mercadopago.com/v1/payments/${req.params.id}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    const data = await mpRes.json();
+    if (!mpRes.ok) return res.status(mpRes.status).json({ message: data.message || 'Error MP' });
+    res.json({
+      id:              data.id,
+      status:          data.status,
+      status_detail:   data.status_detail,
+      monto:           data.transaction_amount,
+      moneda:          data.currency_id,
+      fecha:           data.date_approved || data.date_created,
+      descripcion:     data.description,
+      pagador_email:   data.payer?.email,
+      pagador_nombre:  [data.payer?.first_name, data.payer?.last_name].filter(Boolean).join(' '),
+      medio:           data.payment_method_id,
+      tipo:            data.payment_type_id,
+    });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
@@ -4962,6 +5831,8 @@ app.post('/api/choferes/:id/upload-docs', uploadChofer.fields([
   { name: 'dni_dorso', maxCount: 1 },
   { name: 'registro_frente', maxCount: 1 },
   { name: 'registro_dorso', maxCount: 1 },
+  { name: 'calif1', maxCount: 1 },
+  { name: 'calif2', maxCount: 1 },
 ]), async (req, res) => {
   try {
     const db = await getPool();
@@ -4971,6 +5842,8 @@ app.post('/api/choferes/:id/upload-docs', uploadChofer.fields([
     if (req.files?.dni_dorso?.[0])        updates.dni_dorso_url        = `${base}/${req.files.dni_dorso[0].filename}`;
     if (req.files?.registro_frente?.[0])  updates.registro_frente_url  = `${base}/${req.files.registro_frente[0].filename}`;
     if (req.files?.registro_dorso?.[0])   updates.registro_dorso_url   = `${base}/${req.files.registro_dorso[0].filename}`;
+    if (req.files?.calif1?.[0])           updates.calif1_url           = `${base}/${req.files.calif1[0].filename}`;
+    if (req.files?.calif2?.[0])           updates.calif2_url           = `${base}/${req.files.calif2[0].filename}`;
     if (!Object.keys(updates).length) return res.json({ ok: true, urls: {} });
     const setParts = Object.keys(updates).map(k => `${k} = ?`);
     await db.query(`UPDATE choferes SET ${setParts.join(', ')} WHERE id = ?`,
@@ -4984,6 +5857,8 @@ app.post('/api/ocr/chofer/:id?', uploadChofer.fields([
   { name: 'dni_dorso', maxCount: 1 },
   { name: 'registro_frente', maxCount: 1 },
   { name: 'registro_dorso', maxCount: 1 },
+  { name: 'calif1', maxCount: 1 },
+  { name: 'calif2', maxCount: 1 },
 ]), async (req, res) => {
   try {
     const result = {};
@@ -5223,6 +6098,8 @@ app.post('/api/ai/extract-chofer', memUpload.fields([
   { name: 'dni_dorso', maxCount: 1 },
   { name: 'registro_frente', maxCount: 1 },
   { name: 'registro_dorso', maxCount: 1 },
+  { name: 'calif1', maxCount: 1 },
+  { name: 'calif2', maxCount: 1 },
 ]), async (req, res) => {
   try {
     const buildImg = (f) => f ? { type: 'image', source: { type: 'base64', media_type: f.mimetype, data: f.buffer.toString('base64') } } : null;
@@ -5279,6 +6156,8 @@ Reglas importantes:
     if (req.files?.dni_dorso?.[0]) data.dni_dorso_url = await saveLocal('dni_dorso', req.files.dni_dorso[0].buffer, req.files.dni_dorso[0].mimetype);
     if (req.files?.registro_frente?.[0]) data.registro_frente_url = await saveLocal('registro_frente', req.files.registro_frente[0].buffer, req.files.registro_frente[0].mimetype);
     if (req.files?.registro_dorso?.[0]) data.registro_dorso_url = await saveLocal('registro_dorso', req.files.registro_dorso[0].buffer, req.files.registro_dorso[0].mimetype);
+    if (req.files?.calif1?.[0]) data.calif1_url = await saveLocal('calif1', req.files.calif1[0].buffer, req.files.calif1[0].mimetype);
+    if (req.files?.calif2?.[0]) data.calif2_url = await saveLocal('calif2', req.files.calif2[0].buffer, req.files.calif2[0].mimetype);
 
     res.json({ success: true, ...data });
   } catch (err) {
@@ -5289,7 +6168,7 @@ Reglas importantes:
 // -- Guardar URLs de documentos en chofer
 app.post('/api/choferes/:id/documentos', async (req, res) => {
   // campos con valor = URL nueva; campos con valor '__CLEAR__' = borrar; undefined/null = no tocar (COALESCE)
-  const { dni_frente_url, dni_dorso_url, registro_frente_url, registro_dorso_url, registro_categoria, registro_vencimiento } = req.body;
+  const { dni_frente_url, dni_dorso_url, registro_frente_url, registro_dorso_url, registro_categoria, registro_vencimiento, calif1_url, calif2_url } = req.body;
   const resolve = (v) => v === '__CLEAR__' ? null : (v || null);
   const coalesce = (v, col) => v === '__CLEAR__' ? `${col} = NULL` : `${col} = COALESCE(?, ${col})`;
   try {
@@ -5301,6 +6180,8 @@ app.post('/api/choferes/:id/documentos', async (req, res) => {
       { val: registro_dorso_url,  col: 'registro_dorso_url' },
       { val: registro_categoria,  col: 'registro_categoria' },
       { val: registro_vencimiento,col: 'registro_vencimiento' },
+      { val: calif1_url,          col: 'calif1_url' },
+      { val: calif2_url,          col: 'calif2_url' },
     ];
     const setParts = []; const vals = [];
     fields.forEach(({ val, col }) => {
@@ -5397,12 +6278,13 @@ app.get('/api/alertas/consolidado', async (req, res) => {
 
     // Registro de conductor
     const [choferRows] = await db.query(`
-      SELECT id AS chofer_id, nombre, registro_vencimiento
+      SELECT id AS chofer_id, nombre, registro_vencimiento, telefono
       FROM choferes WHERE registro_vencimiento IS NOT NULL
     `);
     choferRows.forEach(r => alertas.push({
       tipo: 'registro', chofer_id: r.chofer_id, chofer_nombre: r.nombre,
       detalle: 'Registro de conductor', fecha_vencimiento: r.registro_vencimiento, dias: diasHasta(r.registro_vencimiento),
+      wa_numero: r.telefono || null,
     }));
 
     // Service por KM — último service con "próximo service (km)" cargado, por vehículo + tipo.
@@ -5457,6 +6339,52 @@ app.get('/api/alertas/consolidado', async (req, res) => {
       });
     }
 
+    // Certificados AFIP — cert_vence de afip_contribuyentes
+    const [certRows] = await db.query(
+      `SELECT id, cuit, nombre, cert_vence FROM afip_contribuyentes WHERE activo=1 AND cert_vence IS NOT NULL`);
+    certRows.forEach(r => alertas.push({
+      tipo: 'afip_cert', afip_id: r.id,
+      detalle: `Cert AFIP ${r.nombre} (${r.cuit})`,
+      fecha_vencimiento: r.cert_vence,
+      dias: diasHasta(r.cert_vence),
+    }));
+
+    // Multas pendientes — vto. voluntario o total dentro de 20 días (o ya vencidas)
+    const [multaRows] = await db.query(`
+      SELECT m.id, m.numero_acta, m.descripcion, m.monto_voluntario, m.monto_total,
+             m.fecha_vto_voluntario, m.fecha_vto_total, m.fecha_vencimiento,
+             v.id AS vehiculo_id, v.patente
+      FROM multas m
+      JOIN vehiculos v ON v.id = m.vehiculo_id
+      WHERE m.estado = 'pendiente'
+        AND (
+          (m.fecha_vto_voluntario IS NOT NULL AND DATEDIFF(m.fecha_vto_voluntario, CURDATE()) <= 20)
+          OR (m.fecha_vto_total    IS NOT NULL AND DATEDIFF(m.fecha_vto_total,    CURDATE()) <= 20)
+          OR (m.fecha_vto_voluntario IS NULL AND m.fecha_vto_total IS NULL
+              AND m.fecha_vencimiento IS NOT NULL AND DATEDIFF(m.fecha_vencimiento, CURDATE()) <= 20)
+        )
+    `);
+    multaRows.forEach(r => {
+      // Vto. voluntario
+      const fVol = r.fecha_vto_voluntario || r.fecha_vencimiento;
+      const diasVol = diasHasta(fVol);
+      if (fVol) alertas.push({
+        tipo: 'multa', subtipo: 'voluntario',
+        vehiculo_id: r.vehiculo_id, patente: r.patente, multa_id: r.id,
+        detalle: `${r.numero_acta ? 'Acta ' + r.numero_acta + ' · ' : ''}${r.descripcion || 'Multa'} — Pago voluntario${r.monto_voluntario ? ' $' + parseFloat(r.monto_voluntario).toLocaleString('es-AR') : ''}`,
+        fecha_vencimiento: fVol, dias: diasVol,
+      });
+      // Vto. total (si existe y es distinto al voluntario)
+      if (r.fecha_vto_total && r.fecha_vto_total !== r.fecha_vto_voluntario) {
+        alertas.push({
+          tipo: 'multa', subtipo: 'total',
+          vehiculo_id: r.vehiculo_id, patente: r.patente, multa_id: r.id,
+          detalle: `${r.numero_acta ? 'Acta ' + r.numero_acta + ' · ' : ''}${r.descripcion || 'Multa'} — Pago total${r.monto_total ? ' $' + parseFloat(r.monto_total).toLocaleString('es-AR') : ''}`,
+          fecha_vencimiento: r.fecha_vto_total, dias: diasHasta(r.fecha_vto_total),
+        });
+      }
+    });
+
     // Ordenar: primero lo que ya venció o tiene fecha/estimación (asc), lo sin-dato al final
     alertas.sort((a,b) => {
       if (a.dias == null && b.dias == null) return 0;
@@ -5468,6 +6396,115 @@ app.get('/api/alertas/consolidado', async (req, res) => {
     res.json(alertas);
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
+
+// ── Mensajes programados (recordatorios WA) ──────────────────────────────────
+
+app.get('/api/wa/programados', requireAuth, async (req, res) => {
+  try {
+    const db = await getPool();
+    await db.query(`CREATE TABLE IF NOT EXISTS wa_mensajes_programados (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      mensaje TEXT NOT NULL,
+      destinatarios_tipo VARCHAR(20) NOT NULL,
+      destinatarios JSON NOT NULL,
+      fecha_hora DATETIME NOT NULL,
+      repeticion VARCHAR(20) DEFAULT 'none',
+      estado VARCHAR(20) DEFAULT 'pendiente',
+      error_msg TEXT,
+      created_at DATETIME DEFAULT NOW()
+    )`);
+    // Agregar columna repeticion si la tabla ya existía sin ella
+    await db.query(`ALTER TABLE wa_mensajes_programados ADD COLUMN IF NOT EXISTS repeticion VARCHAR(20) DEFAULT 'none'`).catch(()=>{});
+    const [rows] = await db.query('SELECT * FROM wa_mensajes_programados ORDER BY fecha_hora ASC');
+    res.json(rows);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+app.post('/api/wa/programados', requireAuth, async (req, res) => {
+  try {
+    const db = await getPool();
+    const { mensaje, destinatarios_tipo, destinatarios, fecha_hora, repeticion = 'none' } = req.body;
+    if (!mensaje || !destinatarios_tipo || !destinatarios?.length || !fecha_hora)
+      return res.status(400).json({ message: 'Faltan campos requeridos' });
+    await db.query(
+      'INSERT INTO wa_mensajes_programados (mensaje, destinatarios_tipo, destinatarios, fecha_hora, repeticion) VALUES (?,?,?,?,?)',
+      [mensaje, destinatarios_tipo, JSON.stringify(destinatarios), fecha_hora, repeticion]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+app.put('/api/wa/programados/:id', requireAuth, async (req, res) => {
+  try {
+    const db = await getPool();
+    const { mensaje, destinatarios_tipo, destinatarios, fecha_hora, repeticion = 'none' } = req.body;
+    if (!mensaje || !fecha_hora) return res.status(400).json({ message: 'Faltan campos' });
+    await db.query(
+      'UPDATE wa_mensajes_programados SET mensaje=?, destinatarios_tipo=?, destinatarios=?, fecha_hora=?, repeticion=?, estado=\'pendiente\', error_msg=NULL WHERE id=?',
+      [mensaje, destinatarios_tipo, JSON.stringify(destinatarios), fecha_hora, repeticion, req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+app.delete('/api/wa/programados/:id', requireAuth, async (req, res) => {
+  try {
+    const db = await getPool();
+    await db.query('DELETE FROM wa_mensajes_programados WHERE id=?', [req.params.id]);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// Loop de envío de mensajes programados (cada 60 segundos)
+async function _procesarMensajesProgramados() {
+  try {
+    const db = await getPool();
+    const [[exists]] = await db.query("SHOW TABLES LIKE 'wa_mensajes_programados'");
+    if (!exists) return;
+    const [pendientes] = await db.query(
+      "SELECT * FROM wa_mensajes_programados WHERE estado='pendiente' AND fecha_hora <= NOW()"
+    );
+    for (const m of pendientes) {
+      try {
+        const { MessageMedia } = require('whatsapp-web.js');
+        const sess = waSessions.get('default');
+        if (!sess?.ready) throw new Error('Bot WA no conectado');
+        const client = sess.client;
+        const dests = typeof m.destinatarios === 'string' ? JSON.parse(m.destinatarios) : m.destinatarios;
+        let errores = 0;
+        for (const d of dests) {
+          try {
+            const chatId = await _resolveWaChatId(client, d.chatId || d.id || '');
+            const texto = d.patente ? m.mensaje.replace(/\{patente\}/gi, d.patente) : m.mensaje;
+            await client.sendMessage(chatId, texto);
+            await new Promise(r => setTimeout(r, 1000));
+          } catch { errores++; }
+        }
+        const estadoFinal = errores === dests.length ? 'error' : 'enviado';
+        await db.query(
+          "UPDATE wa_mensajes_programados SET estado=?, error_msg=? WHERE id=?",
+          [estadoFinal, errores ? `${errores} destinos fallaron` : null, m.id]
+        );
+        // Reprogramar si tiene repetición
+        if (estadoFinal === 'enviado' && m.repeticion && m.repeticion !== 'none') {
+          const base = new Date(m.fecha_hora);
+          if (m.repeticion === 'daily')   base.setDate(base.getDate() + 1);
+          else if (m.repeticion === 'weekly')  base.setDate(base.getDate() + 7);
+          else if (m.repeticion === 'monthly') base.setMonth(base.getMonth() + 1);
+          const _p = n => String(n).padStart(2,'0');
+          const next = `${base.getFullYear()}-${_p(base.getMonth()+1)}-${_p(base.getDate())} ${_p(base.getHours())}:${_p(base.getMinutes())}:${_p(base.getSeconds())}`;
+          await db.query(
+            'INSERT INTO wa_mensajes_programados (mensaje, destinatarios_tipo, destinatarios, fecha_hora, repeticion) VALUES (?,?,?,?,?)',
+            [m.mensaje, m.destinatarios_tipo, typeof m.destinatarios === 'string' ? m.destinatarios : JSON.stringify(m.destinatarios), next, m.repeticion]
+          );
+        }
+      } catch (err) {
+        await db.query("UPDATE wa_mensajes_programados SET estado='error', error_msg=? WHERE id=?", [err.message, m.id]);
+      }
+    }
+  } catch (_) {}
+}
+setInterval(_procesarMensajesProgramados, 60000);
 
 startApp();
 

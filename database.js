@@ -269,10 +269,33 @@ async function initializeDatabase() {
       ) ENGINE=InnoDB;
     `);
     await db.query(`ALTER TABLE multas ADD COLUMN IF NOT EXISTS fecha_pago DATE NULL`).catch(()=>{});
+    await db.query(`ALTER TABLE multas ADD COLUMN IF NOT EXISTS monto_voluntario DECIMAL(12,2) NULL COMMENT 'Importe con bonificación voluntaria'`).catch(()=>{});
+    await db.query(`ALTER TABLE multas ADD COLUMN IF NOT EXISTS fecha_vto_voluntario DATE NULL COMMENT 'Vencimiento pago voluntario'`).catch(()=>{});
+    await db.query(`ALTER TABLE multas ADD COLUMN IF NOT EXISTS monto_total DECIMAL(12,2) NULL COMMENT 'Importe pago total sin bonificación'`).catch(()=>{});
+    await db.query(`ALTER TABLE multas ADD COLUMN IF NOT EXISTS fecha_vto_total DATE NULL COMMENT 'Vencimiento pago total'`).catch(()=>{});
     await db.query(`ALTER TABLE multas ADD COLUMN IF NOT EXISTS medio_pago_multa VARCHAR(50) NULL`).catch(()=>{});
     await db.query(`ALTER TABLE multas ADD COLUMN IF NOT EXISTS nro_operacion_pago VARCHAR(100) NULL`).catch(()=>{});
     await db.query(`ALTER TABLE multas ADD COLUMN IF NOT EXISTS comprobante_pago_url VARCHAR(255) NULL`).catch(()=>{});
+    await db.query(`ALTER TABLE multas ADD COLUMN IF NOT EXISTS cuenta_id_pago INT NULL`).catch(()=>{});
+    await db.query(`ALTER TABLE multas ADD COLUMN IF NOT EXISTS tarjeta_id_pago INT NULL`).catch(()=>{});
+    await db.query(`ALTER TABLE multas ADD COLUMN IF NOT EXISTS cuotas_pago INT NULL DEFAULT 1`).catch(()=>{});
     console.log('[DB] Tabla "multas" verificada/creada.');
+
+    // Auditoría de verificaciones de multas por vehículo/municipalidad
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS multa_verificacion_log (
+        id                 INT AUTO_INCREMENT PRIMARY KEY,
+        vehiculo_id        INT NOT NULL,
+        municipalidad_id   INT NOT NULL,
+        fecha              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        resultado          ENUM('sin_multas','con_multas','error','cancelado') DEFAULT 'sin_multas',
+        multas_encontradas INT DEFAULT 0,
+        multas_importadas  INT DEFAULT 0,
+        usuario            VARCHAR(100) NULL,
+        INDEX idx_vehi_muni (vehiculo_id, municipalidad_id),
+        INDEX idx_fecha (fecha)
+      ) ENGINE=InnoDB;
+    `);
 
     // 9. Tabla de Bancos (Argentina)
     await db.query(`
@@ -571,6 +594,8 @@ async function initializeDatabase() {
     await db.query(`ALTER TABLE choferes ADD COLUMN IF NOT EXISTS registro_dorso_url VARCHAR(255) NULL`).catch(() => {});
     await db.query(`ALTER TABLE choferes ADD COLUMN IF NOT EXISTS registro_categoria VARCHAR(50) NULL`).catch(() => {});
     await db.query(`ALTER TABLE choferes ADD COLUMN IF NOT EXISTS registro_vencimiento DATE NULL`).catch(() => {});
+    await db.query(`ALTER TABLE choferes ADD COLUMN IF NOT EXISTS calif1_url VARCHAR(255) NULL`).catch(() => {});
+    await db.query(`ALTER TABLE choferes ADD COLUMN IF NOT EXISTS calif2_url VARCHAR(255) NULL`).catch(() => {});
 
     // 22. Columnas GPS y nuevos campos en proveedores
     await db.query(`ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS email VARCHAR(150) NULL`).catch(()=>{});
@@ -700,6 +725,7 @@ async function initializeDatabase() {
     await db.query(`ALTER TABLE services ADD COLUMN IF NOT EXISTS modificado_at DATETIME NULL`).catch(()=>{});
     await db.query(`ALTER TABLE services ADD COLUMN IF NOT EXISTS km_intervalo INT NULL`).catch(()=>{});
     await db.query(`ALTER TABLE services ADD COLUMN IF NOT EXISTS km_proximo INT NULL`).catch(()=>{});
+    await db.query(`ALTER TABLE services ADD COLUMN IF NOT EXISTS diagnostico_json JSON NULL COMMENT 'Certificado YPF: checklist, productos, observaciones'`).catch(()=>{});
     // ── VTV: nuevas columnas para AI/OCR ──────────────────────────
     await db.query(`ALTER TABLE vehiculo_vtv ADD COLUMN IF NOT EXISTS resultado ENUM('apto','condicional','rechazado') NULL`).catch(()=>{});
     await db.query(`ALTER TABLE vehiculo_vtv ADD COLUMN IF NOT EXISTS patente_vtv VARCHAR(20) NULL`).catch(()=>{});
@@ -1096,6 +1122,83 @@ async function initializeDatabase() {
         FOREIGN KEY (service_id)  REFERENCES services(id)  ON DELETE CASCADE,
         FOREIGN KEY (cuenta_id)   REFERENCES cuentas(id)   ON DELETE SET NULL,
         FOREIGN KEY (tarjeta_id)  REFERENCES tarjetas(id)  ON DELETE SET NULL
+      ) ENGINE=InnoDB
+    `).catch(()=>{});
+
+    // ── AFIP — contribuyentes (multi-CUIT) ───────────────────────────────────
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS afip_contribuyentes (
+        id           INT AUTO_INCREMENT PRIMARY KEY,
+        cuit         BIGINT       NOT NULL UNIQUE,
+        nombre       VARCHAR(200) NOT NULL,
+        punto_venta  SMALLINT     NOT NULL DEFAULT 1,
+        production   TINYINT      NOT NULL DEFAULT 0,
+        cert_pem     TEXT         NULL,
+        key_pem      TEXT         NULL,
+        cert_vence   DATE         NULL,
+        activo       TINYINT      NOT NULL DEFAULT 1,
+        notas        TEXT         NULL,
+        wscdc_url    VARCHAR(500) NULL,
+        created_at   TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+        updated_at   TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB
+    `).catch(()=>{});
+    await db.query(`ALTER TABLE afip_contribuyentes ADD COLUMN IF NOT EXISTS wscdc_url VARCHAR(500) NULL`).catch(()=>{});
+    await db.query(`ALTER TABLE afip_contribuyentes ADD COLUMN IF NOT EXISTS concepto_base VARCHAR(200) NULL`).catch(()=>{});
+
+    // ── ARCA / AFIP — comprobantes sincronizados ──────────────────────────────
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS afip_comprobantes (
+        id               INT AUTO_INCREMENT PRIMARY KEY,
+        direccion        ENUM('emitido','recibido') NOT NULL,
+        codigo_tipo      SMALLINT     NOT NULL,
+        desc_tipo        VARCHAR(60)  NULL,
+        pto_venta        SMALLINT     NOT NULL,
+        nro_comprobante  INT          NOT NULL,
+        fecha_cbte       DATE         NOT NULL,
+        fecha_vto_pago   DATE         NULL,
+        cuit_emisor      BIGINT       NOT NULL,
+        razon_social     VARCHAR(200) NULL,
+        cuit_receptor    BIGINT       NULL,
+        importe_total    DECIMAL(14,2) DEFAULT 0,
+        importe_neto     DECIMAL(14,2) DEFAULT 0,
+        importe_iva      DECIMAL(14,2) DEFAULT 0,
+        moneda           VARCHAR(4)   DEFAULT 'PES',
+        cae              VARCHAR(30)  NULL,
+        cae_vto          DATE         NULL,
+        estado           VARCHAR(30)  DEFAULT 'A',
+        raw_json         JSON         NULL,
+        synced_at        TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        created_at       TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_cbte (direccion, cuit_emisor, codigo_tipo, pto_venta, nro_comprobante)
+      ) ENGINE=InnoDB
+    `).catch(()=>{});
+
+    await db.query(`ALTER TABLE afip_comprobantes ADD COLUMN IF NOT EXISTS pdf_url VARCHAR(500) NULL`).catch(()=>{});
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS afip_sync_log (
+        id          INT AUTO_INCREMENT PRIMARY KEY,
+        direccion   ENUM('emitido','recibido') NOT NULL,
+        fecha_desde DATE NOT NULL,
+        fecha_hasta DATE NOT NULL,
+        total_nuevos INT DEFAULT 0,
+        synced_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        error       TEXT NULL
+      ) ENGINE=InnoDB
+    `).catch(()=>{});
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS afip_tokens (
+        id          INT AUTO_INCREMENT PRIMARY KEY,
+        cuit        BIGINT NOT NULL,
+        service     VARCHAR(50) NOT NULL,
+        environment ENUM('prod','homo') NOT NULL DEFAULT 'homo',
+        token       LONGTEXT NOT NULL,
+        sign        TEXT NOT NULL,
+        expires_at  DATETIME NOT NULL,
+        created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_ta (cuit, service, environment)
       ) ENGINE=InnoDB
     `).catch(()=>{});
 
