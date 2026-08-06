@@ -91,7 +91,7 @@ input[type="date"], input[type="datetime-local"] {
 input::placeholder, textarea::placeholder { color: var(--placeholder-color) !important; opacity: 1; }
 .text-error { color: var(--color-error); }
 .text-success { color: var(--color-success); }
-input:invalid, input.is-invalid { border-color: var(--color-error) !important; }
+input:user-invalid, input.is-invalid { border-color: var(--color-error) !important; }
 input.is-valid { border-color: var(--color-success) !important; }
 
 /* Tema Claro */
@@ -363,7 +363,8 @@ body {
 /* App Container Layout */
 .app-container {
   display: flex;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 /* Sidebar Styling */
@@ -475,6 +476,8 @@ body {
   display: flex;
   flex-direction: column;
   background-color: var(--bg-primary);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .top-navbar {
@@ -515,7 +518,24 @@ body {
 .view-container {
   padding: 10px 32px 32px;
   flex-grow: 1;
+  min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--scroll-accent) 40%, transparent) transparent;
+}
+.view-container::-webkit-scrollbar        { width: 10px; }
+.view-container::-webkit-scrollbar-track  { background: transparent; margin: 4px 0; }
+.view-container::-webkit-scrollbar-thumb  {
+  background: color-mix(in srgb, var(--scroll-accent) 35%, transparent);
+  border-radius: 99px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background 0.2s;
+}
+.view-container::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--scroll-accent) 60%, transparent);
+  background-clip: padding-box;
 }
 
 .content-view {
@@ -1421,14 +1441,12 @@ body.modal-open {
 
 /* ── Modales OPERATIVOS (CRUD) ──────────────────────────────────────────────
    Identificados por tener pestañas, o la clase .modal-crud explícita.
-   Borde izquierdo rojo accent + header con fondo levemente tintado.          */
+   Header con fondo levemente tintado.                                        */
 .modal-card:has(.modal-tabs),
 .modal-card:has(.persona-tabs),
 .modal-card:has(.modal-tab-btn),
 .modal-card.modal-crud {
   height: 90vh;
-  border-left: 3px solid var(--accent-color);
-  border-radius: 4px 16px 16px 4px;
 }
 .modal-card:has(.modal-tabs) .modal-header,
 .modal-card:has(.persona-tabs) .modal-header,
@@ -1919,6 +1937,7 @@ form {
   justify-content: center;
   transition: all .2s;
   z-index: 1;
+  outline: none;
 }
 .btn-search-icon:hover {
   border-color: var(--accent-purple);

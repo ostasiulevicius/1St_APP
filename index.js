@@ -1080,7 +1080,7 @@ app.get('/api/services/:id/pagos', async (req, res) => {
 
 app.post('/api/services/:id/pagos', async (req, res) => {
   // Reemplaza todos los pagos del service (array en body)
-  const pagos = req.body; // [{medio, monto, cuenta_id, tarjeta_id, cuotas, notas}]
+  const pagos = req.body; // [{medio, monto, cuenta_id, tarjeta_id, cuotas, notas, comprobante_url}]
   if (!Array.isArray(pagos)) return res.status(400).json({ message: 'Se esperaba un array de pagos' });
   try {
     const db = await getPool();
@@ -1088,12 +1088,25 @@ app.post('/api/services/:id/pagos', async (req, res) => {
     for (const p of pagos) {
       if (!p.monto || !p.medio) continue;
       await db.query(
-        'INSERT INTO service_pagos (service_id, medio, monto, cuenta_id, tarjeta_id, cuotas, notas) VALUES (?,?,?,?,?,?,?)',
-        [req.params.id, p.medio, p.monto, p.cuenta_id||null, p.tarjeta_id||null, p.cuotas||1, p.notas||null]
+        'INSERT INTO service_pagos (service_id, medio, monto, cuenta_id, tarjeta_id, cuotas, notas, comprobante_url) VALUES (?,?,?,?,?,?,?,?)',
+        [req.params.id, p.medio, p.monto, p.cuenta_id||null, p.tarjeta_id||null, p.cuotas||1, p.notas||null, p.comprobante_url||null]
       );
     }
     await registrarAuditoria(req, 'services', 'pagos-guardar', req.params.id, `Pagos guardados para service ${req.params.id}: ${pagos.length} ítem(s)`);
     res.json({ message: 'Pagos guardados' });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+app.post('/api/upload/svc-pago-comprobante', memUpload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'Sin archivo' });
+    const pathM = require('path'), fs = require('fs');
+    const dir = pathM.join(__dirname, 'public', 'uploads', 'services');
+    fs.mkdirSync(dir, { recursive: true });
+    const ext = req.file.originalname.split('.').pop() || 'jpg';
+    const fname = `comprobante_${Date.now()}.${ext}`;
+    fs.writeFileSync(pathM.join(dir, fname), req.file.buffer);
+    res.json({ url: `/uploads/services/${fname}` });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 

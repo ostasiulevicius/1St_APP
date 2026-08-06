@@ -939,6 +939,12 @@
               </select>
             </div>
             <div class="filter-col">
+              <label>Vehículo</label>
+              <select id="alertas-filter-vehiculo" class="form-control" style="width:110px;">
+                <option value="">-- Todos --</option>
+              </select>
+            </div>
+            <div class="filter-col">
               <label>Desde</label>
               <input type="date" id="alertas-filter-desde" class="form-control" style="width:125px!important;">
             </div>
@@ -946,9 +952,19 @@
               <label>Hasta</label>
               <input type="date" id="alertas-filter-hasta" class="form-control" style="width:125px!important;">
             </div>
+            <div class="filter-col">
+              <label>Buscar</label>
+              <div class="search-input-wrap">
+                <input type="text" id="alertas-filter-q" class="form-control" placeholder="Patente, chofer, detalle…"
+                  oninput="renderAlertasModulo()" onkeydown="if(event.key==='Enter')renderAlertasModulo()">
+                <button type="button" class="btn-search-icon" onclick="renderAlertasModulo()" title="Buscar">
+                  <i class="fa-solid fa-magnifying-glass"></i>
+                </button>
+              </div>
+            </div>
             <button class="btn btn-primary btn-sm btn-filter-apply" onclick="renderAlertasModulo()" title="Filtrar"><i class="fa-solid fa-filter"></i></button>
             <button class="btn btn-secondary btn-sm btn-clear-filter" onclick="clearAlertasFilters()" title="Limpiar filtros"><i class="fa-solid fa-filter-circle-xmark"></i></button>
-            <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
+            <div class="section-actions">
               <button class="btn btn-secondary btn-sm" onclick="exportAlertasXLS()" title="Exportar XLS"><i class="fa-solid fa-file-excel"></i></button>
               <button class="btn btn-sm" style="background:#25d366;color:#fff;" onclick="enviarWaMasivoAlertas()" title="Enviar WA a todos los filtrados con número"><i class="fa-brands fa-whatsapp"></i> WA</button>
               <button class="btn btn-secondary btn-sm" onclick="loadAlertasModulo()"><i class="fa-solid fa-rotate"></i> Actualizar</button>
@@ -1111,7 +1127,7 @@
             <h3 style="margin:0 0 12px;font-size:15px;">
               <i class="fa-solid fa-key" style="color:var(--accent-orange);"></i> Otras API Keys
             </h3>
-            <form id="form-credenciales" onsubmit="saveCredenciales(event)">
+            <form id="form-credenciales" novalidate onsubmit="saveCredenciales(event)">
               <div id="cred-list" style="display:flex;flex-direction:column;gap:14px;">
                 <!-- se puebla por JS -->
               </div>
@@ -1178,7 +1194,7 @@
               <button class="modal-close" onclick="closeModal('modal-ia-cred')">×</button>
             </div>
             <div class="modal-body">
-              <form id="form-ia-cred" onsubmit="saveIACred(event)" style="display:flex;flex-direction:column;gap:12px;">
+              <form id="form-ia-cred" novalidate onsubmit="saveIACred(event)" style="display:flex;flex-direction:column;gap:12px;">
                 <input type="hidden" id="iac-id">
                 <div class="form-group">
                   <label>Nombre <span style="color:red">*</span></label>
@@ -1658,7 +1674,7 @@
         <h2 id="modal-turno-title"><i class="fa-solid fa-clock-rotate-left"></i> Nuevo Turno</h2>
         <button class="btn-close" onclick="closeModal('modal-turno')"><i class="fa-solid fa-xmark"></i></button>
       </div>
-      <form id="form-turno" onsubmit="saveTurno(event)">
+      <form id="form-turno" novalidate onsubmit="saveTurno(event)">
         <div class="modal-body">
           <div class="form-grid">
             <div class="form-group">
@@ -2272,7 +2288,7 @@
         <h2 id="modal-usuario-title">Nuevo Usuario</h2>
         <button class="btn-close" onclick="closeModal('modal-usuario')">&times;</button>
       </div>
-      <form id="form-usuario" onsubmit="saveUsuario(event)">
+      <form id="form-usuario" novalidate onsubmit="saveUsuario(event)">
         <input type="hidden" id="usr-id">
         <input type="hidden" id="usr-lat">
         <input type="hidden" id="usr-lng">
@@ -2701,7 +2717,7 @@
       </div>
 
       <div class="modal-tab-content active" id="vh-tab-datos">
-      <form id="form-vehiculo" onsubmit="saveVehiculo(event)">
+      <form id="form-vehiculo" novalidate onsubmit="saveVehiculo(event)">
         <input type="hidden" id="vh-id">
         
         <!-- ① CÉDULA — primero para autocompletar -->
@@ -2956,7 +2972,7 @@
         </button>
       </div>
 
-      <form id="form-aseguradora" onsubmit="saveAseguradora(event)">
+      <form id="form-aseguradora" novalidate onsubmit="saveAseguradora(event)">
         <input type="hidden" id="aseg-id">
 
         <!-- Tab: Datos -->
@@ -3078,7 +3094,7 @@
         </button>
       </div>
 
-      <form id="form-proveedor" onsubmit="saveProveedor(event)">
+      <form id="form-proveedor" novalidate onsubmit="saveProveedor(event)">
         <input type="hidden" id="prov-id">
         <input type="hidden" id="prov-lat">
         <input type="hidden" id="prov-lng">
@@ -3247,7 +3263,7 @@
           <i class="fa-solid fa-images"></i> Detalle / Fotos
         </button>
       </div>
-      <form id="form-service" onsubmit="saveService(event)">
+      <form id="form-service" novalidate onsubmit="saveService(event)">
         <input type="hidden" id="svc-id">
 
         <!-- Tab: Datos -->
@@ -3544,7 +3560,7 @@
           <i class="fa-solid fa-paperclip"></i> Adjuntos
         </button>
       </div>
-      <form id="form-multa" onsubmit="saveMulta(event)">
+      <form id="form-multa" novalidate onsubmit="saveMulta(event)">
         <input type="hidden" id="multa-id">
 
         <!-- Tab: Datos -->
@@ -4132,7 +4148,7 @@
         <h2 id="modal-municipalidad-title">Nueva Municipalidad</h2>
         <button class="btn-close" onclick="closeModal('modal-municipalidad')">&times;</button>
       </div>
-      <form id="form-municipalidad" onsubmit="saveMunicipalidad(event)">
+      <form id="form-municipalidad" novalidate onsubmit="saveMunicipalidad(event)">
         <input type="hidden" id="mun-id">
         <div class="form-grid">
           <div class="form-group">
@@ -4206,7 +4222,7 @@
       <div class="modal-body" style="padding:20px;">
 
         <!-- Formulario -->
-        <form id="form-banco" onsubmit="saveBanco(event)" style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 60px;gap:8px 12px;margin-bottom:18px;padding-bottom:16px;border-bottom:1px solid var(--border-color);align-items:end;">
+        <form id="form-banco" novalidate onsubmit="saveBanco(event)" style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 60px;gap:8px 12px;margin-bottom:18px;padding-bottom:16px;border-bottom:1px solid var(--border-color);align-items:end;">
           <input type="hidden" id="banco-id">
           <div class="form-group" style="margin:0;">
             <label>Nombre *</label>
@@ -4292,7 +4308,7 @@
       <div class="modal-body" style="padding:20px;">
 
         <!-- Formulario -->
-        <form id="form-cuenta" onsubmit="saveCuenta(event)" style="display:grid;grid-template-columns:1fr 1fr;gap:10px 16px;margin-bottom:20px;padding-bottom:18px;border-bottom:1px solid var(--border-color);">
+        <form id="form-cuenta" novalidate onsubmit="saveCuenta(event)" style="display:grid;grid-template-columns:1fr 1fr;gap:10px 16px;margin-bottom:20px;padding-bottom:18px;border-bottom:1px solid var(--border-color);">
           <input type="hidden" id="cuenta-id">
           <div class="form-group" style="margin:0;">
             <label>Alias *</label>
@@ -4387,7 +4403,7 @@
         </button>
         <button class="btn-close" onclick="closeModal('modal-pago')">&times;</button>
       </div>
-      <form id="form-pago" onsubmit="savePago(event)">
+      <form id="form-pago" novalidate onsubmit="savePago(event)">
         <!-- Dropzone comprobante — mismo layout que otros documentos -->
         <div style="margin-bottom:10px;">
           <div class="cedula-dropzone dz-img-top" id="pg-comprobante-drop" style="position:relative;"
@@ -4668,7 +4684,7 @@
           <h3>Historial GNC</h3>
           <div style="display: grid; grid-template-columns: 1fr 1.5fr; gap: 20px; margin-top: 15px;">
             <!-- Formulario de carga de GNC -->
-            <form id="form-gnc" onsubmit="saveGNC(event)" style="padding: 0; background: none; border: none;">
+            <form id="form-gnc" novalidate onsubmit="saveGNC(event)" style="padding: 0; background: none; border: none;">
               <!-- Dropzone oblea — patrón estándar con preview + overlay buttons -->
               <div class="cedula-dropzone dz-img-top" id="gnc-oblea-dropzone" style="margin-bottom:6px;"
                    onclick="document.getElementById('gnc-file').click()"
@@ -4769,7 +4785,7 @@
           <h3>Historial de Seguros</h3>
           <div style="display: grid; grid-template-columns: 1.2fr 1.8fr; gap: 20px; margin-top: 15px;">
             <!-- Formulario de carga de Seguro -->
-            <form id="form-seguro" onsubmit="saveSeguro(event)" style="padding: 0; background: none; border: none;">
+            <form id="form-seguro" novalidate onsubmit="saveSeguro(event)" style="padding: 0; background: none; border: none;">
               <!-- Dropzone póliza — patrón estándar con preview + overlay buttons -->
               <div class="cedula-dropzone dz-img-top" id="seg-poliza-dropzone" style="margin-bottom:6px;"
                    onclick="document.getElementById('seg-file').click()"
@@ -4873,7 +4889,7 @@
         <h2 id="modal-producto-title">Nuevo Producto</h2>
         <button class="btn-close" onclick="closeModal('modal-producto')">&times;</button>
       </div>
-      <form id="form-producto" onsubmit="saveProducto(event)">
+      <form id="form-producto" novalidate onsubmit="saveProducto(event)">
         <input type="hidden" id="prod-id">
         <input type="hidden" id="prod-foto-url-existing">
         <!-- Dropzone foto / código de barras -->
@@ -4926,7 +4942,7 @@
         <h2>Entrega de Set de Productos</h2>
         <button class="btn-close" onclick="closeModal('modal-entrega')">&times;</button>
       </div>
-      <form id="form-entrega" onsubmit="saveEntrega(event)">
+      <form id="form-entrega" novalidate onsubmit="saveEntrega(event)">
         <input type="hidden" id="entrega-id">
         <div class="form-grid">
           <div class="form-group">

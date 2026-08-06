@@ -281,6 +281,8 @@ async function initializeDatabase() {
     await db.query(`ALTER TABLE multas ADD COLUMN IF NOT EXISTS cuotas_pago INT NULL DEFAULT 1`).catch(()=>{});
     console.log('[DB] Tabla "multas" verificada/creada.');
 
+    await db.query(`ALTER TABLE service_pagos ADD COLUMN IF NOT EXISTS comprobante_url VARCHAR(500) NULL`).catch(()=>{});
+
     // Auditoría de verificaciones de multas por vehículo/municipalidad
     await db.query(`
       CREATE TABLE IF NOT EXISTS multa_verificacion_log (

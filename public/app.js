@@ -3106,7 +3106,8 @@ async function deleteTarjeta(id) {
 }
 
 // ── Service: grilla multi-pago ────────────────────────────────────────────
-let _svcPagos = []; // [{medio, monto, cuenta_id, tarjeta_id, cuotas, notas}]
+let _svcPagos = []; // [{medio, monto, cuenta_id, tarjeta_id, cuotas, notas, comprobante_url, _file}]
+let _svcPagoDzs = [];
 
 function _svcPagosUpdateSummary() {
   const costo = getAmt('svc-costo');
@@ -3133,7 +3134,7 @@ function addSvcPagoRow(preset = {}) {
     const saldo  = costo - pagado;
     if (saldo > 0) montoAuto = String(saldo);
   }
-  _svcPagos.push({ medio: preset.medio || 'efectivo', monto: montoAuto, cuenta_id: preset.cuenta_id || '', tarjeta_id: preset.tarjeta_id || '', cuotas: preset.cuotas || 1, notas: preset.notas || '' });
+  _svcPagos.push({ medio: preset.medio || 'efectivo', monto: montoAuto, cuenta_id: preset.cuenta_id || '', tarjeta_id: preset.tarjeta_id || '', cuotas: preset.cuotas || 1, notas: preset.notas || '', comprobante_url: preset.comprobante_url || '', _file: null });
   renderSvcPagos();
 }
 
@@ -3210,6 +3211,10 @@ function renderSvcPagos() {
         </div>
       </div>
       ${extraFields}
+      <div style="margin-top:10px;">
+        <label style="font-size:10px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px;">Comprobante</label>
+        <div id="svc-pago-dz-mount-${i}" style="margin-top:3px;"></div>
+      </div>
     </div>`;
   }).join('') || `<div style="text-align:center;padding:28px 0;color:var(--text-secondary);font-size:13px;">
       <i class="fa-solid fa-credit-card" style="font-size:24px;margin-bottom:8px;display:block;opacity:.3;"></i>
@@ -3217,6 +3222,23 @@ function renderSvcPagos() {
     </div>`;
 
   _svcPagosUpdateSummary();
+
+  // Crear DropZones para comprobantes (se recrean en cada render; el _file/url se preserva en _svcPagos[i])
+  _svcPagoDzs = _svcPagos.map((p, i) => {
+    const dz = new DropZone({
+      mountId: `svc-pago-dz-mount-${i}`,
+      id:      `svc-pago-dz-${i}`,
+      label:   'Comprobante (imagen o PDF)',
+      icon:    'fa-receipt',
+      task:    'foto',
+      camera:  false,
+      uploadEndpoint: '/api/upload/svc-pago-comprobante',
+      onFileSet: (file) => { _svcPagos[i]._file = file; _svcPagos[i].comprobante_url = ''; },
+    });
+    if (p._file)           dz.setFile(p._file);
+    else if (p.comprobante_url) dz.loadUrl(p.comprobante_url);
+    return dz;
+  });
 }
 
 function _onSvcPagoMedio(i, val) {
@@ -3233,16 +3255,29 @@ function _tarjetaMarcaLabel(t) {
 async function _loadSvcPagos(serviceId) {
   if (!serviceId) { _svcPagos = []; renderSvcPagos(); return; }
   const rows = await fetch(`/api/services/${serviceId}/pagos`).then(r => r.json()).catch(() => []);
-  _svcPagos = rows.map(r => ({ medio: r.medio, monto: r.monto, cuenta_id: r.cuenta_id || '', tarjeta_id: r.tarjeta_id || '', cuotas: r.cuotas || 1, notas: r.notas || '' }));
+  _svcPagos = rows.map(r => ({ medio: r.medio, monto: r.monto, cuenta_id: r.cuenta_id || '', tarjeta_id: r.tarjeta_id || '', cuotas: r.cuotas || 1, notas: r.notas || '', comprobante_url: r.comprobante_url || '', _file: null }));
   renderSvcPagos();
 }
 
 async function _saveSvcPagos(serviceId) {
   if (!serviceId || !_svcPagos.length) return;
+  // Subir comprobantes nuevos antes de guardar
+  const pagos = _svcPagos.filter(p => p.monto && parseFloat(p.monto) > 0);
+  for (const p of pagos) {
+    if (p._file) {
+      try {
+        const fd = new FormData();
+        fd.append('file', p._file);
+        const r = await fetch('/api/upload/svc-pago-comprobante', { method: 'POST', body: fd });
+        if (r.ok) { const d = await r.json(); p.comprobante_url = d.url; }
+      } catch(_) {}
+      p._file = null;
+    }
+  }
   await fetch(`/api/services/${serviceId}/pagos`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(_svcPagos.filter(p => p.monto && parseFloat(p.monto) > 0))
+    body: JSON.stringify(pagos.map(p => ({ medio: p.medio, monto: p.monto, cuenta_id: p.cuenta_id, tarjeta_id: p.tarjeta_id, cuotas: p.cuotas, notas: p.notas, comprobante_url: p.comprobante_url || null })))
   });
 }
 
@@ -5512,6 +5547,10 @@ function _initScrollNavBtns() {
   // Y al sidebar-nav específicamente
   _attachScrollNav(document.querySelector('.sidebar-nav'), document.querySelector('.sidebar'));
 
+  // Vista principal de contenido
+  const vc = document.querySelector('.view-container');
+  if (vc) _attachScrollNav(vc, vc);
+
   // Para tablas: se llama también desde injectExportBar al renderizar cada módulo
 }
 
@@ -6487,6 +6526,27 @@ function _toggleMultaPagoArea(multaId) {
         task:           'foto',
         camera:         false,
         uploadEndpoint: '/api/upload/multa-foto',
+        onFileSet: (file) => {
+          if (!file) return;
+          const isPdf = file.type === 'application/pdf';
+          const ocrBtn = document.getElementById('dz-ocr-multa-pago-dz-dropzone');
+          if (ocrBtn) { ocrBtn.disabled = isPdf; ocrBtn.title = isPdf ? 'OCR solo para imágenes — se usa IA automáticamente' : ''; }
+          if (_aiAvailable) {
+            dzSetStatus('multa-pago-dz-dropzone', '⏳ Extrayendo datos…', 'info');
+            setTimeout(() => extractMultaPagoAI(), 300);
+          } else if (!isPdf) {
+            dzSetStatus('multa-pago-dz-dropzone', '⏳ Leyendo comprobante…', 'info');
+            setTimeout(() => extractMultaPagoOCR(), 300);
+          } else {
+            dzSetStatus('multa-pago-dz-dropzone', 'PDF cargado — configurá IA para extraer datos', 'warn');
+          }
+        },
+      });
+      injectDzToolbar('multa-pago-dz-dropzone', 'multa-pago-dz-file', {
+        camera:   false,
+        ocr:      'extractMultaPagoOCR', ocrLabel: 'OCR',
+        ai:       'extractMultaPagoAI',  aiLabel:  'IA',
+        statusId: 'dz-status-multa-pago-dz-dropzone',
       });
     }
   } else {
@@ -9819,6 +9879,86 @@ async function extractPagoAI() {
   }
 }
 
+// ── OCR / IA para comprobante de pago de multa ──────────────────────────────
+
+const _MULTA_PAGO_STATUS = 'multa-pago-dz-dropzone';
+
+function _fillMultaPagoFields(data) {
+  // Fecha
+  if (data.fecha) {
+    const el = document.getElementById('multa-fecha-pago');
+    if (el) el.value = data.fecha.replace(' ', 'T').substring(0, 10);
+  }
+  // Nro operación
+  const nro = data.nro_transaccion || data.nro_operacion || data.numero_factura || '';
+  if (nro) { const el = document.getElementById('multa-nro-operacion-pago'); if (el) el.value = nro; }
+  // Medio de pago + cuenta
+  const medio = _inferMedioPagoStr(data);
+  const cuentaId = (function() {
+    if (!_cachedCuentas.length) return '';
+    const c = _matchCuenta(data.cuil_destino || data.cuil_origen, data.cbu_destino || data.cbu_origen, data.alias_destino || data.alias_origen || null)
+           || _matchCuenta(data.cuil_origen, data.cbu_origen, null);
+    return c?.id || '';
+  })();
+  const sel = document.getElementById('multa-medio-pago');
+  if (sel && medio) sel.value = medio;
+  _onMultaMedioPagoChange(medio || (sel?.value || ''), cuentaId, '', 1);
+}
+
+// Devuelve el string de medio de pago inferido (igual que _inferMedioPago pero sin tocar el DOM de Pagos)
+function _inferMedioPagoStr(data) {
+  const banco = (data.banco_origen || data.banco_destino || data.medio_pago || '').toLowerCase();
+  if (/mercado\s?pago|mp\.com/i.test(banco))  return 'MercadoPago';
+  if (/uala|ualá/i.test(banco))               return 'Uala';
+  if (/transfer/i.test(banco) || data.cbu_origen || data.cbu_destino) return 'Transferencia';
+  if (/tarjeta|visa|master|cabal/i.test(banco)) return 'Tarjeta';
+  if (/efectivo|cash/i.test(banco))             return 'Efectivo';
+  return '';
+}
+
+async function extractMultaPagoOCR() {
+  const file = _dzMultaPago?._file;
+  if (!file) return;
+  dzSetStatus(_MULTA_PAGO_STATUS, '⏳ Leyendo comprobante…', 'info');
+  try {
+    const fd = new FormData();
+    fd.append('comprobante', file);
+    const res = await fetch('/api/ocr/comprobante', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    if (!_cachedCuentas.length) await loadCuentasSelect();
+    _fillMultaPagoFields(data);
+    dzSetStatus(_MULTA_PAGO_STATUS, '✓ OCR: datos completados', 'ok');
+  } catch(err) {
+    dzSetStatus(_MULTA_PAGO_STATUS, '✗ Error OCR: ' + err.message, 'error');
+  }
+}
+
+async function extractMultaPagoAI() {
+  const file = _dzMultaPago?._file;
+  if (!file) return;
+  dzSetStatus(_MULTA_PAGO_STATUS, '🤖 Analizando con IA…', 'info');
+  try {
+    await _loadBancos();
+    const fd = new FormData();
+    fd.append('factura', file);
+    const res = await fetch('/api/ai/extract-factura', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error((await res.json()).message);
+    const d = await res.json();
+    // Enriquecer con bancos identificados por CBU
+    d.banco_origen  = d.banco_origen  || _identifyBanco(d.cbu_origen)  || '';
+    d.banco_destino = d.banco_destino || _identifyBanco(d.cbu_destino) || '';
+    // Normalizar campos al formato que espera _fillMultaPagoFields
+    d.fecha           = d.fecha_emision || d.fecha || '';
+    d.nro_transaccion = d.nro_operacion || d.numero_factura || '';
+    if (!_cachedCuentas.length) await loadCuentasSelect();
+    _fillMultaPagoFields(d);
+    dzSetStatus(_MULTA_PAGO_STATUS, '✓ IA: datos extraídos', 'ok');
+  } catch(err) {
+    dzSetStatus(_MULTA_PAGO_STATUS, '✗ ' + _aiErrorMsg(err), 'error');
+  }
+}
+
 async function savePago(e) {
   e.preventDefault();
 
@@ -11558,6 +11698,13 @@ async function loadAlertasModulo() {
   try {
     const res = await fetch('/api/alertas/consolidado');
     _cachedAlertas = await res.json();
+    // Poblar select de vehículos con las patentes presentes en las alertas
+    const sel = document.getElementById('alertas-filter-vehiculo');
+    if (sel) {
+      const patentes = [...new Set(_cachedAlertas.map(a => a.patente).filter(Boolean))].sort();
+      sel.innerHTML = '<option value="">-- Todos --</option>' +
+        patentes.map(p => `<option value="${p}">${p}</option>`).join('');
+    }
     renderAlertasModulo();
   } catch (e) {
     body.innerHTML = `<p style="color:var(--color-error);font-size:13px;">Error al cargar alertas: ${e.message}</p>`;
@@ -11567,7 +11714,10 @@ async function loadAlertasModulo() {
 function clearAlertasFilters() {
   _clearSelect('alertas-filter-tipo');
   _clearSelect('alertas-filter-estado');
-  ['alertas-filter-desde','alertas-filter-hasta'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  _clearSelect('alertas-filter-vehiculo');
+  ['alertas-filter-desde','alertas-filter-hasta','alertas-filter-q'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
   renderAlertasModulo();
 }
 
@@ -11654,14 +11804,21 @@ let _lastAlertasList = [];
 function renderAlertasModulo() {
   const body = document.getElementById('alertas-modulo-body');
   if (!body) return;
-  const tipoF   = document.getElementById('alertas-filter-tipo')?.value || '';
-  const estadoF = document.getElementById('alertas-filter-estado')?.value || '';
-  const desdeF  = document.getElementById('alertas-filter-desde')?.value || '';
-  const hastaF  = document.getElementById('alertas-filter-hasta')?.value || '';
+  const tipoF     = document.getElementById('alertas-filter-tipo')?.value || '';
+  const estadoF   = document.getElementById('alertas-filter-estado')?.value || '';
+  const vehiculoF = document.getElementById('alertas-filter-vehiculo')?.value || '';
+  const desdeF    = document.getElementById('alertas-filter-desde')?.value || '';
+  const hastaF    = document.getElementById('alertas-filter-hasta')?.value || '';
+  const qF        = (document.getElementById('alertas-filter-q')?.value || '').toLowerCase().trim();
 
   let list = _cachedAlertas.slice();
-  if (tipoF) list = list.filter(a => a.tipo === tipoF);
-  if (estadoF) list = list.filter(a => _alertaEstado(a).clase === estadoF || (estadoF === 'ok' && a.dias == null));
+  if (tipoF)     list = list.filter(a => a.tipo === tipoF);
+  if (estadoF)   list = list.filter(a => _alertaEstado(a).clase === estadoF || (estadoF === 'ok' && a.dias == null));
+  if (vehiculoF) list = list.filter(a => a.patente === vehiculoF);
+  if (qF)        list = list.filter(a => {
+    const hay = [a.patente, a.chofer_nombre, a.detalle, a.tipo].filter(Boolean).join(' ').toLowerCase();
+    return hay.includes(qF);
+  });
   if (desdeF || hastaF) {
     const hoy = new Date(); hoy.setHours(0,0,0,0);
     list = list.filter(a => {
