@@ -11715,9 +11715,11 @@ function clearAlertasFilters() {
   _clearSelect('alertas-filter-tipo');
   _clearSelect('alertas-filter-estado');
   _clearSelect('alertas-filter-vehiculo');
-  ['alertas-filter-desde','alertas-filter-hasta','alertas-filter-q'].forEach(id => {
+  ['alertas-filter-desde','alertas-filter-hasta'].forEach(id => {
     const el = document.getElementById(id); if (el) el.value = '';
   });
+  const sInp = document.getElementById('alertas-search-input');
+  if (sInp && sInp.value) { sInp.value = ''; if (document.getElementById('alertas-search-btn')?.classList.contains('active')) toggleSearch('alertas'); }
   renderAlertasModulo();
 }
 
@@ -11809,7 +11811,7 @@ function renderAlertasModulo() {
   const vehiculoF = document.getElementById('alertas-filter-vehiculo')?.value || '';
   const desdeF    = document.getElementById('alertas-filter-desde')?.value || '';
   const hastaF    = document.getElementById('alertas-filter-hasta')?.value || '';
-  const qF        = (document.getElementById('alertas-filter-q')?.value || '').toLowerCase().trim();
+  const qF        = (document.getElementById('alertas-search-input')?.value || '').toLowerCase().trim();
 
   let list = _cachedAlertas.slice();
   if (tipoF)     list = list.filter(a => a.tipo === tipoF);

@@ -940,7 +940,7 @@
             </div>
             <div class="filter-col">
               <label>Vehículo</label>
-              <select id="alertas-filter-vehiculo" class="form-control" style="width:110px;">
+              <select id="alertas-filter-vehiculo" class="form-control" style="width:110px!important;">
                 <option value="">-- Todos --</option>
               </select>
             </div>
@@ -952,14 +952,15 @@
               <label>Hasta</label>
               <input type="date" id="alertas-filter-hasta" class="form-control" style="width:125px!important;">
             </div>
-            <div class="filter-col">
-              <label>Buscar</label>
-              <div class="search-input-wrap">
-                <input type="text" id="alertas-filter-q" class="form-control" placeholder="Patente, chofer, detalle…"
-                  oninput="renderAlertasModulo()" onkeydown="if(event.key==='Enter')renderAlertasModulo()">
-                <button type="button" class="btn-search-icon" onclick="renderAlertasModulo()" title="Buscar">
+            <div class="filter-col" style="flex:0 0 auto;">
+              <div class="search-toggle-wrap" id="alertas-search-wrap">
+                <button class="btn-search-icon" id="alertas-search-btn" onclick="toggleSearch('alertas')" title="Buscar">
                   <i class="fa-solid fa-magnifying-glass"></i>
                 </button>
+                <input type="text" id="alertas-search-input" class="search-expand-input" placeholder="Patente, chofer, detalle…"
+                  oninput="renderAlertasModulo()"
+                  onkeydown="if(event.key==='Escape'){this.value='';renderAlertasModulo();toggleSearch('alertas');}"
+                  style="display:none;">
               </div>
             </div>
             <button class="btn btn-primary btn-sm btn-filter-apply" onclick="renderAlertasModulo()" title="Filtrar"><i class="fa-solid fa-filter"></i></button>
