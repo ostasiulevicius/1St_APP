@@ -2506,8 +2506,15 @@ app.post('/api/ocr/cedula', upload.single('cedula_img'), async (req, res) => {
 });
 
 // ── Evitar que errores no capturados tumben el servidor ──────────────────────
-process.on('uncaughtException',  err => console.error('[PROCESO] uncaughtException:', err.message));
-process.on('unhandledRejection', err => console.error('[PROCESO] unhandledRejection:', err?.message || err));
+process.on('uncaughtException', err => {
+  // EBUSY en archivos de sesión wwebjs (Windows): Chrome retiene el lock del journal de SQLite
+  if (err.code === 'EBUSY' && err.path && err.path.includes('.wwebjs_auth')) return;
+  console.error('[PROCESO] uncaughtException:', err.message);
+});
+process.on('unhandledRejection', err => {
+  if (err?.code === 'EBUSY' && err?.path && err.path.includes('.wwebjs_auth')) return;
+  console.error('[PROCESO] unhandledRejection:', err?.message || err);
+});
 
 // ── Bot Telegram ──────────────────────────────────────────────────────────────
 let _tgBot = null;
