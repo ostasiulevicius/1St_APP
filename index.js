@@ -2815,9 +2815,25 @@ function _buildWaClient(sid) {
     c.on('ready', () => console.log('[BOT] ¡Bot de WhatsApp conectado y listo!'));
     c.on('disconnected', () => console.log('[BOT] WhatsApp desconectado.'));
   }
-  c.initialize().catch(err => {
+  const _isContextError = e => e?.message && (
+    e.message.includes('Execution context was destroyed') ||
+    e.message.includes('detached Frame') ||
+    e.message.includes('Target closed')
+  );
+  c.initialize().catch(async err => {
     console.error(`[WA:${sid}] Error init:`, err.message);
     if (sid === 'default') botReadyStatus = false;
+    if (_isContextError(err)) {
+      console.log(`[WA:${sid}] WhatsApp Web recargó la página durante init — reintentando en 8s…`);
+      await new Promise(r => setTimeout(r, 8000));
+      if (!sess.destroying && !sess.ready) {
+        console.log(`[WA:${sid}] Reintento de inicialización…`);
+        c.initialize().catch(err2 => {
+          console.error(`[WA:${sid}] Error en reintento init:`, err2.message);
+          if (sid === 'default') botReadyStatus = false;
+        });
+      }
+    }
   });
   return sess;
 }
