@@ -145,8 +145,7 @@ body.theme-light .stat-card { background: #ffffff; }
   box-shadow: var(--glass-shadow);
   text-align: center;
 }
-.login-card .logo-icon { font-size: 40px; color: var(--accent-color); margin-bottom: 12px; }
-.login-card h2 { font-size: 24px; font-weight: 700; margin-bottom: 6px; }
+.login-card img { margin-bottom: 4px; }
 .login-card p { font-size: 13px; color: var(--text-secondary); margin-bottom: 28px; }
 .login-card .form-group { margin-bottom: 16px; text-align: left; }
 .login-card .form-group label { font-size: 12px; color: var(--text-secondary); display: block; margin-bottom: 6px; }
@@ -190,6 +189,8 @@ body.theme-light .stat-card { background: #ffffff; }
 .sidebar-nav,
 .ss-drop,
 .table-container,
+.table-responsive,
+.table-wrapper,
 .modal-body {
   scrollbar-width: thin;
   scrollbar-color: var(--border-color) transparent;
@@ -197,14 +198,20 @@ body.theme-light .stat-card { background: #ffffff; }
 .sidebar-nav::-webkit-scrollbar,
 .ss-drop::-webkit-scrollbar,
 .table-container::-webkit-scrollbar,
+.table-responsive::-webkit-scrollbar,
+.table-wrapper::-webkit-scrollbar,
 .modal-body::-webkit-scrollbar        { width: 5px; height: 5px; }
 .sidebar-nav::-webkit-scrollbar-track,
 .ss-drop::-webkit-scrollbar-track,
 .table-container::-webkit-scrollbar-track,
+.table-responsive::-webkit-scrollbar-track,
+.table-wrapper::-webkit-scrollbar-track,
 .modal-body::-webkit-scrollbar-track  { background: transparent; margin: 6px; }
 .sidebar-nav::-webkit-scrollbar-thumb,
 .ss-drop::-webkit-scrollbar-thumb,
 .table-container::-webkit-scrollbar-thumb,
+.table-responsive::-webkit-scrollbar-thumb,
+.table-wrapper::-webkit-scrollbar-thumb,
 .modal-body::-webkit-scrollbar-thumb  {
   background: color-mix(in srgb, var(--scroll-accent) 30%, transparent);
   border-radius: 99px;
@@ -214,6 +221,8 @@ body.theme-light .stat-card { background: #ffffff; }
 .sidebar-nav::-webkit-scrollbar-thumb:hover,
 .ss-drop::-webkit-scrollbar-thumb:hover,
 .table-container::-webkit-scrollbar-thumb:hover,
+.table-responsive::-webkit-scrollbar-thumb:hover,
+.table-wrapper::-webkit-scrollbar-thumb:hover,
 .modal-body::-webkit-scrollbar-thumb:hover {
   background: color-mix(in srgb, var(--scroll-accent) 55%, transparent);
   background-clip: padding-box;
@@ -519,7 +528,7 @@ body {
   padding: 10px 32px 32px;
   flex-grow: 1;
   min-height: 0;
-  overflow-y: auto;
+  overflow-y: hidden;
   overflow-x: hidden;
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--scroll-accent) 40%, transparent) transparent;
@@ -807,6 +816,40 @@ body {
   transform: scale(0.93);
 }
 
+/* Botón Pegar — posicionado sobre el textarea, mismo efecto que .btn-close */
+.btn-paste-clipboard {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  height: 36px;
+  border-radius: 18px;
+  background: transparent;
+  border: 1.5px solid var(--scroll-accent);
+  color: var(--scroll-accent);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  opacity: 0.80;
+  transition: background 0.18s ease, border-color 0.18s ease,
+              transform 0.15s ease, box-shadow 0.18s ease, opacity 0.18s ease;
+}
+.btn-paste-clipboard:hover {
+  background: var(--scroll-accent);
+  border-color: var(--scroll-accent);
+  color: #fff;
+  opacity: 1;
+  transform: scale(1.07);
+  box-shadow: 0 0 14px var(--scroll-accent);
+}
+.btn-paste-clipboard:active {
+  transform: scale(0.95);
+}
+
 /* Persona modal tabs */
 .persona-tabs {
   display: flex;
@@ -933,7 +976,8 @@ body {
 }
 
 /* Table Design */
-.table-responsive {
+.table-responsive,
+.table-wrapper {
   width: 100%;
   overflow: auto;
   max-height: calc(100vh - 185px); /* navbar 70 + section-actions ~60 + padding 32 + margen */
@@ -993,7 +1037,7 @@ body {
 .tg-tab.active { background: var(--accent-color); color: #fff; border-color: var(--accent-color); font-weight: 600; }
 
 .totals-row td {
-  background: color-mix(in srgb, var(--accent-color) 7%, var(--bg-secondary));
+  background: var(--bg-secondary);
   font-size: 13px;
   font-weight: 700;
   padding: 7px 12px;
@@ -1097,9 +1141,12 @@ body {
   text-transform: capitalize;
 }
 
-.badge-success { background-color: rgba(52, 199, 89, 0.15); color: var(--accent-green); }
-.badge-danger { background-color: rgba(255, 59, 48, 0.15); color: var(--accent-red); }
-.badge-warning { background-color: #f59e0b; color: #fff; }
+.badge-success, .badge-green  { background-color: rgba(52, 199, 89, 0.15);   color: var(--accent-green); }
+.badge-danger,  .badge-red    { background-color: rgba(255, 59, 48, 0.15);   color: var(--accent-red); }
+.badge-warning                 { background-color: #f59e0b;                   color: #fff; }
+.badge-info,    .badge-blue   { background-color: rgba(0, 132, 255, 0.15);   color: var(--accent-blue); }
+.badge-secondary,.badge-gray  { background-color: rgba(120,120,130,0.15);    color: var(--text-secondary); }
+.badge-purple                  { background-color: rgba(127, 86, 217, 0.18); color: #7f56d9; }
 
 /* ── Botones de acción en tablas ──────────────────────────────────── */
 .tbl-action-btn {
@@ -2146,11 +2193,9 @@ body.theme-light .modern-table tbody tr.row-selected:hover {
   border-color: rgba(0,0,0,.2);
 }
 
-/* ── Contenedor de tablas (scrolleable) ─────────────────────────── */
+/* ── Contenedor de tablas (wrapper para scroll-nav, sin scroll propio) ── */
 .table-container {
   position: relative;
-  overflow-y: auto;
-  max-height: 70vh;
 }
 
 /* ── Botones Top / Bottom para contenedores con scroll ──────────── */
@@ -2765,3 +2810,48 @@ body.theme-light .modern-table tbody tr.row-selected:hover {
 .diag-productos-table input { width: 100%; box-sizing: border-box; }
 .diag-productos-table .btn-icon-sm { padding: 2px 6px; font-size: 12px; background: none; border: none; color: var(--text-muted); cursor: pointer; }
 .diag-productos-table .btn-icon-sm:hover { color: var(--color-error, #ef4444); }
+
+/* ══════════════════════════════════════════════════════════════
+   MÓDULO FLOTAS — tabs internos del modal de detalle
+   ══════════════════════════════════════════════════════════════ */
+.flota-tab-btn {
+  padding: 10px 18px;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: color 0.15s, border-color 0.15s;
+}
+.flota-tab-btn:hover { color: var(--text-primary); }
+.flota-tab-btn.active {
+  color: var(--accent-color);
+  border-bottom-color: var(--accent-color);
+}
+.flota-tab-pane { display: none; flex: 1; overflow: hidden; }
+.flota-tab-pane.active { display: flex; }
+
+/* ── Flota selector en user-dropdown ── */
+.flota-opt {
+  padding: 5px 8px;
+  border-radius: 5px;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+  transition: background 0.12s;
+  white-space: nowrap;
+}
+.flota-opt:hover { background: var(--bg-hover, rgba(128,128,128,.12)); }
+.flota-opt.flota-opt-active {
+  background: rgba(var(--accent-rgb, 139,92,246), .15);
+  color: var(--accent-color);
+  font-weight: 600;
+}

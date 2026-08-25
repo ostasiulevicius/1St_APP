@@ -477,6 +477,36 @@ function dzSetStatus(dzId, msg, type = 'info') {
 }
 
 /**
+ * Pone/saca estado "cargando" en un botón de toolbar (spinner + disabled).
+ */
+function _dzSetBtnLoading(btnId, loading) {
+  const btn = document.getElementById(btnId);
+  if (!btn) return;
+  if (loading) {
+    btn._origHTML = btn.innerHTML;
+    btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+    btn.disabled = true;
+  } else {
+    if (btn._origHTML) { btn.innerHTML = btn._origHTML; btn._origHTML = null; }
+    btn.disabled = btn.classList.contains('dz-ai') && !_aiAvailable;
+  }
+}
+
+/**
+ * Limpia los campos del panel Origen/Destino del modal de cobro
+ * para evitar que queden datos de una lectura anterior.
+ */
+function _clearPagoPanel() {
+  _pagoTrfData = null;
+  const clr     = id => { const el = document.getElementById(id); if (el) el.textContent = ''; };
+  const clrHTML = id => { const el = document.getElementById(id); if (el) el.innerHTML  = ''; };
+  ['pg-origen-nombre','pg-origen-cuil','pg-origen-banco',
+   'pg-destino-nombre','pg-destino-cuil','pg-destino-banco',
+   'pg-trf-monto','pg-trf-nro'].forEach(clr);
+  ['pg-origen-match','pg-destino-match'].forEach(clrHTML);
+}
+
+/**
  * Habilita/deshabilita el botón AI de todas las toolbars según disponibilidad.
  */
 function _applyAiAvailability() {
@@ -646,8 +676,9 @@ function injectExportBar(tableId, label) {
   void insertBefore; // referencia conservada para el scrollNav abajo
 
   if (tableWrap) {
-    _attachScrollNav(tableWrap, tableWrap);
-    tableWrap._scrollNavReposition?.();
+    const _sEl = tableWrap.querySelector('.table-responsive') || tableWrap;
+    _attachScrollNav(_sEl, _sEl);
+    _sEl._scrollNavReposition?.();
   }
   // Notificar a TODOS los scroll-nav para que re-evalúen
   window.dispatchEvent(new Event('flota:tablerender'));
@@ -1370,6 +1401,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   navItems.forEach(item => {
     item.addEventListener('click', () => {
+      if (item.style.display === 'none') return; // bloquear si no tiene permiso
       const tabId = item.getAttribute('data-tab');
       navItems.forEach(btn => btn.classList.remove('active'));
       item.classList.add('active');
@@ -1461,12 +1493,15 @@ function loadTabData(tabId) {
     case 'tab-auditoria':
       loadAuditoria();
       break;
+    case 'tab-flotas':
+      loadFlotas();
+      break;
   }
 }
 
 function navigateTo(tabId) {
   const btn = document.querySelector(`.nav-item[data-tab="${tabId}"]`);
-  if (btn) btn.click();
+  if (btn && btn.style.display !== 'none') btn.click();
 }
 
 // Helpers para Modales
@@ -2031,7 +2066,22 @@ function openAddChoferModal() {
   const gpsStatus = document.getElementById('ch-gps-status'); if(gpsStatus) gpsStatus.textContent='';
   const chMap = document.getElementById('ch-map'); if(chMap){ chMap.style.display='none'; chMap.innerHTML=''; }
   const chMapBtn = document.getElementById('ch-map-btn'); if(chMapBtn) chMapBtn.style.display='none';
+  _poblarVehiculosPreasignados();
   openModal('modal-chofer');
+}
+
+async function _poblarVehiculosPreasignados() {
+  const sel = document.getElementById('ch-vehiculo-preasignado');
+  if (!sel || sel.options.length > 1) return;
+  try {
+    const vehList = await fetch('/api/vehiculos').then(r => r.json());
+    vehList.forEach(v => {
+      const o = document.createElement('option');
+      o.value = v.id;
+      o.textContent = v.patente + (v.marca ? ' (' + v.marca + (v.modelo ? ' ' + v.modelo : '') + ')' : '');
+      sel.appendChild(o);
+    });
+  } catch(_) {}
 }
 
 async function loadChoferes() {
@@ -2104,7 +2154,7 @@ function verChofer(id) {
   );
 }
 
-function editChofer(id) {
+async function editChofer(id) {
   const chofer = cachedChoferes.find(c => c.id === id);
   if (!chofer) return;
 
@@ -2141,7 +2191,13 @@ function editChofer(id) {
   document.getElementById('ch-wapp2-vinculo').value = chofer.telefono_alt1_vinculo || '';
   document.getElementById('ch-wapp3').value         = chofer.telefono_alt2 || '';
   document.getElementById('ch-wapp3-vinculo').value = chofer.telefono_alt2_vinculo || '';
-  document.getElementById('ch-liquidacion').value   = chofer.liquidacion || '';
+  document.getElementById('ch-liquidacion').value          = chofer.liquidacion || '';
+  document.getElementById('ch-modalidad-alquiler').value   = chofer.modalidad_alquiler || '';
+
+  // Poblar y seleccionar vehículo preasignado
+  await _poblarVehiculosPreasignados();
+  const selVPre = document.getElementById('ch-vehiculo-preasignado');
+  if (selVPre) selVPre.value = chofer.vehiculo_preasignado_id ? String(chofer.vehiculo_preasignado_id) : '';
 
   _setModalTitle('modal-chofer-title', '<i class="fa-solid fa-id-badge"></i>', 'Modificar Chofer',
     chofer.apellido ? `${chofer.apellido}, ${chofer.nombre||''}` : chofer.nombre);
@@ -2265,7 +2321,9 @@ async function saveChofer(e) {
     telefono_alt1_vinculo: document.getElementById('ch-wapp2-vinculo').value.trim() || null,
     telefono_alt2:         document.getElementById('ch-wapp3').value.trim() || null,
     telefono_alt2_vinculo: document.getElementById('ch-wapp3-vinculo').value.trim() || null,
-    liquidacion:           document.getElementById('ch-liquidacion').value || null
+    liquidacion:              document.getElementById('ch-liquidacion').value || null,
+    modalidad_alquiler:       document.getElementById('ch-modalidad-alquiler').value || null,
+    vehiculo_preasignado_id:  parseInt(document.getElementById('ch-vehiculo-preasignado').value) || null,
   };
 
   const url = isEdit ? `/api/choferes/${id}` : '/api/choferes';
@@ -3889,6 +3947,7 @@ async function openAddServiceModal() {
   _dzSvcFactura?.clear();
   document.getElementById('svc-factura-url').value = '';
   _svcPagos = []; renderSvcPagos(); _svcPagosUpdateSummary();
+  _initDzDiag();
   _initDiag(null);
   switchModalTab(document.querySelector('#modal-service .modal-tab-btn'), 'svc-tab-datos');
   openModal('modal-service');
@@ -3947,6 +4006,7 @@ async function editService(id) {
   // Diagnóstico YPF
   let diagData = null;
   try { diagData = typeof s.diagnostico_json === 'string' ? JSON.parse(s.diagnostico_json) : s.diagnostico_json; } catch(_) {}
+  _initDzDiag();
   _initDiag(diagData);
 
   switchModalTab(document.querySelector('#modal-service .modal-tab-btn'), 'svc-tab-datos');
@@ -5547,11 +5607,7 @@ function _initScrollNavBtns() {
   // Y al sidebar-nav específicamente
   _attachScrollNav(document.querySelector('.sidebar-nav'), document.querySelector('.sidebar'));
 
-  // Vista principal de contenido
-  const vc = document.querySelector('.view-container');
-  if (vc) _attachScrollNav(vc, vc);
-
-  // Para tablas: se llama también desde injectExportBar al renderizar cada módulo
+  // Para tablas: se llama desde injectExportBar al renderizar cada módulo
 }
 
 function _attachScrollNav(scrollEl, wrapEl) {
@@ -5591,7 +5647,7 @@ function _attachScrollNav(scrollEl, wrapEl) {
     btns.style.opacity = canScroll ? '1' : '0';
     btns.style.pointerEvents = canScroll ? 'auto' : 'none';
     btns.style.top = (r.top + r.height / 2) + 'px';
-    btns.style.left = (r.right - 18) + 'px';
+    btns.style.left = (r.right - 16) + 'px';
   };
 
   // Escuchar scroll en el propio elemento y en cualquier ancestro scrolleable
@@ -7630,12 +7686,13 @@ async function deleteMunicipalidad(id) {
 // ============================================================
 // VERIFICACIÓN DE MULTAS — Puppeteer
 // ============================================================
-let _verifJobId        = null;
-let _verifMuniId       = null;
-let _verifMuniNombre   = '';
-let _verifSseSource    = null;
-let _verifResultado    = null;   // resultado parseado por IA
-let _verifPatente      = '';     // patente del vehículo en consulta
+let _verifJobId          = null;
+let _verifMuniId         = null;
+let _verifMuniNombre     = '';
+let _verifSseSource      = null;
+let _verifResultado      = null;
+let _verifPatente        = '';
+let _verifImportCtrl     = null;  // AbortController del fetch de importación en curso
 
 async function abrirModalVerificacion(municipalidadId) {
   const muni = _cachedMunicipalidades.find(m => m.id === municipalidadId);
@@ -7675,6 +7732,11 @@ async function abrirModalVerificacion(municipalidadId) {
 }
 
 function _verifCerrarPanel() {
+  // Abortar importación en curso si la hay
+  if (_verifImportCtrl) { _verifImportCtrl.abort(); _verifImportCtrl = null; }
+  const btnImp = document.getElementById('verif-btn-importar');
+  if (btnImp) { btnImp.disabled = false; btnImp.innerHTML = '<i class="fa-solid fa-file-import"></i> Importar seleccionadas'; btnImp.style.display = 'none'; }
+
   const right = document.getElementById('verif-panel-right');
   if (right) right.style.display = 'none';
   const s2 = document.getElementById('verif-step-2');
@@ -8021,9 +8083,15 @@ async function _mostrarResultadosVerificacion(result) {
     const fechaVal = m.fecha_infraccion
       ? (m.fecha_infraccion.includes('T') ? m.fecha_infraccion.substring(0,16) : m.fecha_infraccion + 'T00:00')
       : '';
-    const fechaCell = `<input type="datetime-local" class="verif-fecha-input" data-idx="${i}"
-         value="${fechaVal}" style="width:155px;font-size:12px;"
-         title="Fecha y hora de infracción">`;
+    const fechaCell = `<div style="display:flex;gap:3px;align-items:center;">
+      <input type="datetime-local" class="verif-fecha-input" data-idx="${i}"
+           value="${fechaVal}" style="width:148px;font-size:12px;"
+           title="Fecha y hora de infracción">
+      <input type="file" accept=".pdf" id="verif-pdf-${i}" style="display:none;"
+           onchange="verifCargarPdfFecha(this,${i})">
+      <label for="verif-pdf-${i}" title="Cargar fecha desde PDF de notificación"
+           style="cursor:pointer;font-size:14px;line-height:1;opacity:.7;" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.7">📄</label>
+    </div>`;
     const tr = document.createElement('tr');
     if (yaRegistrada) tr.style.cssText = 'opacity:.45;';
     tr.innerHTML = `
@@ -8054,6 +8122,22 @@ async function _mostrarResultadosVerificacion(result) {
 
 function toggleAllVerifMultas(checked) {
   document.querySelectorAll('.verif-multa-chk').forEach(cb => cb.checked = checked);
+}
+
+async function verifCargarPdfFecha(input, idx) {
+  if (!input.files[0]) return;
+  const fd = new FormData();
+  fd.append('pdf', input.files[0]);
+  try {
+    const r = await fetch('/api/multas/parse-notificacion-pdf', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!r.ok) { showAlert(d.message || 'No se pudo leer el PDF'); input.value = ''; return; }
+    const val = d.fecha_infraccion + 'T' + (d.hora_infraccion || '00:00');
+    const inp = document.querySelector(`.verif-fecha-input[data-idx="${idx}"]`);
+    if (inp) { inp.value = val; _verifSetFecha(idx, val); }
+    showToast(`✓ Fecha cargada del PDF: ${d.fecha_infraccion} ${d.hora_infraccion || ''}`);
+  } catch(e) { showAlert('Error al procesar PDF: ' + e.message); }
+  input.value = '';
 }
 
 function _verifSetFecha(idx, value) {
@@ -8542,12 +8626,18 @@ async function importarMultasVerificadas() {
   btnImp.disabled = true;
   btnImp.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Importando...';
 
+  _verifImportCtrl = new AbortController();
+  const _importTimeout = setTimeout(() => _verifImportCtrl?.abort(), 30000);
+
   try {
     const res = await fetch(`/api/verificacion/${_verifJobId}/importar`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ multas: multasParaEnviar, vehiculo_id: vehiculoId, municipalidad_id: _verifMuniId })
+      body: JSON.stringify({ multas: multasParaEnviar, vehiculo_id: vehiculoId, municipalidad_id: _verifMuniId }),
+      signal: _verifImportCtrl.signal,
     });
+    clearTimeout(_importTimeout);
+    _verifImportCtrl = null;
     const data = await res.json();
 
     // Subir imágenes pegadas manualmente como adjuntos reales
@@ -8599,9 +8689,11 @@ async function importarMultasVerificadas() {
     _verifCerrarPanel();
     loadMultas();
   } catch(err) {
-    showAlert('Error al importar: ' + err.message);
-    btnImp.disabled = false;
-    btnImp.innerHTML = '<i class="fa-solid fa-file-import"></i> Importar seleccionadas';
+    clearTimeout(_importTimeout);
+    _verifImportCtrl = null;
+    if (err.name !== 'AbortError') showAlert('Error al importar: ' + err.message);
+    const b = document.getElementById('verif-btn-importar');
+    if (b) { b.disabled = false; b.innerHTML = '<i class="fa-solid fa-file-import"></i> Importar seleccionadas'; }
   }
 }
 
@@ -8661,6 +8753,53 @@ function _initSvcFacturaDropzone() {
       if (data.total && !getAmt('svc-costo')) setAmt('svc-costo', data.total);
     },
   });
+}
+
+// ============================================================
+// DIAGNÓSTICO IA — tab Diagnóstico en Service (DropZone + extracción)
+// ============================================================
+let _dzDiagnostico = null;
+
+function _initDzDiag() {
+  _dzDiagnostico = new DropZone({
+    mountId: 'diag-dz-mount',
+    id: 'diag-dz',
+    label: 'Certificado de Service (imagen o PDF)',
+    icon: 'fa-file-medical',
+    task: 'foto',
+    camera: false,
+    onFileSet: (file) => {
+      if (!file) return;
+      if (_aiAvailable) {
+        dzSetStatus('diag-dz', '⏳ Extrayendo datos del certificado…', 'info');
+        setTimeout(() => extractDiagnosticoAI(), 300);
+      } else {
+        dzSetStatus('diag-dz', 'Cargá una API Key de IA para extraer datos automáticamente', 'warn');
+      }
+    },
+  });
+  injectDzToolbar('diag-dz', 'diag-dz-file', {
+    camera: false, ocr: false,
+    ai: 'extractDiagnosticoAI', aiLabel: 'IA',
+    statusId: 'dz-status-diag',
+  });
+}
+
+async function extractDiagnosticoAI() {
+  const file = _dzDiagnostico?._file;
+  if (!file) return showToast('Cargá el certificado primero', 'warn');
+  dzSetStatus('diag-dz', '⏳ Analizando certificado…', 'info');
+  try {
+    const fd = new FormData();
+    fd.append('cert', file, file.name || 'cert.pdf');
+    const r = await fetch('/api/ai/extract-diagnostico', { method: 'POST', body: fd });
+    if (!r.ok) throw new Error((await r.json()).message || r.statusText);
+    const data = await r.json();
+    _initDiag(data);
+    dzSetStatus('diag-dz', '✅ Datos extraídos correctamente', 'ok');
+  } catch (err) {
+    dzSetStatus('diag-dz', '❌ ' + err.message, 'error');
+  }
 }
 
 // ── BANCOS CRUD ──────────────────────────────────────────────────────────────
@@ -9593,9 +9732,7 @@ function previewPagoComprobante(file) {
   }
   if (dz)  dz.classList.add('has-img');
   dzSetStatus('pg-ocr-status', `✓ ${file.name}`, 'ok');
-  // Auto-extraer con IA si está disponible
-  if (_aiAvailable) extractPagoAI();
-  else extractPagoOCR();
+  if (_aiAvailable) extractPagoAI(); else extractPagoOCR();
 }
 
 function clearPagoComprobante() {
@@ -9615,9 +9752,125 @@ function clearPagoComprobante() {
   if (trfPanel) trfPanel.style.display = 'none';
 }
 
+// ══════════════════════════════════════════════════════════════
+// PAGO / RETRIBUCIÓN A PROPIETARIO
+// ══════════════════════════════════════════════════════════════
+
+let _propComprobanteFile = null;
+
+function openPagoPropietarioModal() {
+  _propComprobanteFile = null;
+  document.getElementById('form-pago-prop')?.reset();
+  clearPropComprobante();
+  const nowLocal = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().substring(0, 16);
+  document.getElementById('prop-fecha').value = nowLocal;
+  const montoEl = document.getElementById('prop-monto');
+  if (montoEl) { montoEl.value = ''; montoEl.dataset.raw = ''; }
+  _loadPropCuentasSelects();
+  openModal('modal-pago-propietario');
+}
+
+async function _loadPropCuentasSelects() {
+  const cuentas = _cachedCuentas.length
+    ? _cachedCuentas
+    : await fetch('/api/cuentas').then(r => r.json()).catch(() => []);
+  if (!_cachedCuentas.length) _cachedCuentas = cuentas;
+
+  const optsHtml = cuentas.map(c => {
+    const banco   = c.banco_nombre ? ` · ${c.banco_nombre}` : '';
+    const titular = [c.nombre, c.apellido].filter(Boolean).join(' ');
+    const label   = `${c.alias}${titular ? ' — ' + titular : ''}${banco}`;
+    return `<option value="${c.id}">${label}</option>`;
+  }).join('');
+
+  const destSel = document.getElementById('prop-cuenta-destino');
+  const origSel = document.getElementById('prop-cuenta-origen');
+  if (destSel) destSel.innerHTML = '<option value="">-- Seleccionar Propietario --</option>' + optsHtml;
+  if (origSel) origSel.innerHTML = '<option value="">-- Seleccionar Cuenta Origen --</option>' + optsHtml;
+}
+
+function clearPropComprobante() {
+  _propComprobanteFile = null;
+  const dz   = document.getElementById('prop-comprobante-drop');
+  const prev = document.getElementById('prop-comprobante-prev');
+  const eye  = document.getElementById('prop-comprobante-eye');
+  const inp  = document.getElementById('prop-comprobante-input');
+  if (dz)   dz.classList.remove('has-img');
+  if (prev) { prev.src = ''; prev.style.display = 'none'; }
+  if (eye)  eye.style.display = 'none';
+  if (inp)  try { inp.value = ''; } catch(_) {}
+}
+
+function previewPropComprobante(file) {
+  if (!file) return;
+  _propComprobanteFile = file;
+  const prev = document.getElementById('prop-comprobante-prev');
+  const eye  = document.getElementById('prop-comprobante-eye');
+  const dz   = document.getElementById('prop-comprobante-drop');
+  if (file.type.startsWith('image/')) {
+    const reader = new FileReader();
+    reader.onload = e => {
+      if (prev) { prev.src = e.target.result; prev.style.display = ''; }
+      if (eye)  eye.style.display = '';
+      if (dz)   dz.classList.add('has-img');
+    };
+    reader.readAsDataURL(file);
+  } else {
+    if (dz) dz.classList.add('has-img');
+  }
+}
+
+function handlePropComprobanteDrop(event) {
+  event.preventDefault();
+  document.getElementById('prop-comprobante-drop')?.classList.remove('drag-over');
+  const file = event.dataTransfer.files[0];
+  if (file) previewPropComprobante(file);
+}
+
+async function savePagoPropietario(e) {
+  e.preventDefault();
+  const cuentaDestId = document.getElementById('prop-cuenta-destino').value;
+  const cuentaOrigId = document.getElementById('prop-cuenta-origen').value;
+  const montoEl      = document.getElementById('prop-monto');
+  const monto        = parseFloat(montoEl?.dataset.raw || montoEl?.value.replace(/,/g, '') || 0);
+  const fecha        = document.getElementById('prop-fecha').value;
+
+  if (!cuentaDestId) { showToast('Seleccioná la cuenta destino (propietario)', 'error'); return; }
+  if (!cuentaOrigId) { showToast('Seleccioná la cuenta de origen', 'error'); return; }
+  if (!monto)        { showToast('Ingresá el monto', 'error'); return; }
+  if (!fecha)        { showToast('Ingresá la fecha', 'error'); return; }
+
+  const fd = new FormData();
+  fd.append('cuenta_destino_id',  cuentaDestId);
+  fd.append('cuenta_origen_id',   cuentaOrigId);
+  fd.append('monto',              monto);
+  fd.append('fecha',              fecha);
+  fd.append('medio_pago',         document.getElementById('prop-medio').value || '');
+  fd.append('nro_transaccion',    document.getElementById('prop-nro-trf').value || '');
+  fd.append('detalle',            document.getElementById('prop-detalle').value || '');
+  if (_propComprobanteFile) fd.append('comprobante', _propComprobanteFile);
+
+  const btn = e.target.querySelector('[type=submit]');
+  if (btn) btn.disabled = true;
+  try {
+    const res  = await fetch('/api/pago-propietario', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) { showToast(data.message || 'Error al guardar', 'error'); return; }
+    showToast('Retribución a propietario registrada');
+    closeModal('modal-pago-propietario');
+    loadPagos();
+  } catch (_) {
+    showToast('Error de red', 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 // OCR del comprobante de pago — extrae monto, fecha y destinatario
 async function extractPagoOCR() {
   if (!_pagoComprobanteFile) return;
+  _clearPagoPanel();
+  _dzSetBtnLoading('dz-ocr-pg-comprobante-drop', true);
   dzSetStatus('pg-ocr-status', '⏳ Leyendo comprobante…', 'info');
   try {
     const fd = new FormData();
@@ -9649,7 +9902,8 @@ async function extractPagoOCR() {
     // Detalle/Notas — no se autocomplet, lo escribe el usuario
     // ── Panel Origen / Destino ──
     const panel = document.getElementById('pg-trf-panel');
-    if (panel && (data.nombre_origen || data.nombre_destino)) {
+    const hayDatos = data.nombre_origen || data.nombre_destino || data.cuil_origen || data.cuil_destino;
+    if (panel && hayDatos) {
       panel.style.display = '';
       const setText = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt || ''; };
       setText('pg-origen-nombre', data.nombre_origen || '');
@@ -9672,7 +9926,7 @@ async function extractPagoOCR() {
       // Auto-seleccionar cuenta destino en el select
       const cuentaId = (cd || co)?.id;
       if (cuentaId) { const sel = document.getElementById('pg-cuenta'); if (sel) { if (sel._ssSet) sel._ssSet(cuentaId); else sel.value = cuentaId; } }
-      // Auto-identificar chofer por CUIL/nombre del origen
+      // Auto-identificar chofer por CUIL (funciona aunque nombre_origen sea null)
       if (!cachedChoferes.length) await loadChoferesSelect();
       if (_autoSelectChofer(data.cuil_origen, data.nombre_origen)) filled++;
       filled++;
@@ -9692,6 +9946,8 @@ async function extractPagoOCR() {
     dzSetStatus('pg-ocr-status', msg, filled > 0 ? (sinMonto ? 'warn' : 'ok') : 'warn');
   } catch(err) {
     dzSetStatus('pg-ocr-status', '✗ Error OCR: ' + err.message, 'error');
+  } finally {
+    _dzSetBtnLoading('dz-ocr-pg-comprobante-drop', false);
   }
 }
 
@@ -9788,59 +10044,57 @@ let _pagoEditId  = null; // ID del pago en modo edición (null = nuevo)
 
 async function extractPagoAI() {
   if (!_pagoComprobanteFile) return;
+  _clearPagoPanel();
+  _dzSetBtnLoading('dz-ai-pg-comprobante-drop', true);
   dzSetStatus('pg-ocr-status', '🤖 Analizando con IA…', 'info');
-  _pagoTrfData = null;
   try {
     await _loadBancos();
     const fd = new FormData();
-    fd.append('factura', _pagoComprobanteFile);
-    const res = await fetch('/api/ai/extract-factura', { method: 'POST', body: fd });
+    fd.append('comprobante', _pagoComprobanteFile);
+    const res = await fetch('/api/ai/extract-comprobante', { method: 'POST', body: fd });
     if (!res.ok) throw new Error((await res.json()).message);
     const d = await res.json();
 
     // ── Monto ──
-    const monto = parseFloat((d.total || '').toString().replace(/[^\d.]/g, '')) || 0;
+    const monto = parseFloat((d.monto || '').toString().replace(/[^\d.]/g, '')) || 0;
     if (monto) {
-      const raw = document.getElementById('pg-monto-raw');
-      const vis = document.getElementById('pg-monto');
-      if (raw) raw.value = monto;
-      if (vis) vis.value = monto.toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:2});
+      setAmt('pg-monto', monto);
+      document.getElementById('pg-monto-raw')?.setAttribute('value', monto);
+      calcPagoConceptos();
     }
 
-    // ── Fecha del comprobante ──
-    if (d.fecha_emision) {
+    // ── Fecha ──
+    if (d.fecha) {
       const el = document.getElementById('pg-fecha');
-      if (el) el.value = d.fecha_emision.replace(' ', 'T').substring(0, 16);
+      if (el) el.value = d.fecha.replace(' ', 'T').substring(0, 16);
     }
 
     // ── Nro operación ──
-    const nro = d.nro_operacion || d.numero_factura || '';
+    const nro = d.nro_operacion || '';
     if (nro) { const el = document.getElementById('pg-nro-trf'); if (el) el.value = nro; }
 
-    // ── Identificar banco por CBU/CVU ──
+    // ── Bancos: usar lo que devuelve la IA o inferir por CBU ──
     const bancoOrigen  = d.banco_origen  || _identifyBanco(d.cbu_origen)  || '';
     const bancoDestino = d.banco_destino || _identifyBanco(d.cbu_destino) || '';
-    // Enriquecer d con bancos computados para _inferMedioPago
-    d.banco_origen  = bancoOrigen;
-    d.banco_destino = bancoDestino;
+    d.banco_origen = bancoOrigen; d.banco_destino = bancoDestino;
 
-    // ── Medio de pago: inferido de banco, fintech o nro. de operación ──
-    _inferMedioPago(d);
+    // ── Medio de pago ──
+    if (d.medio_pago) _inferMedioPago({ medio_pago: d.medio_pago, ...d });
+    else _inferMedioPago(d);
 
     // ── Panel Origen / Destino ──
     const panel = document.getElementById('pg-trf-panel');
     if (panel) {
       const setText = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt || ''; };
-      setText('pg-origen-nombre',  d.nombre_origen  || d.proveedor_nombre || '');
-      setText('pg-origen-cuil',    d.cuil_origen    ? `CUIL/CUIT: ${d.cuil_origen}` : '');
-      setText('pg-origen-banco',   bancoOrigen);
+      setText('pg-origen-nombre', d.nombre_origen  || '');
+      setText('pg-origen-cuil',   d.cuil_origen    ? `CUIL/CUIT: ${d.cuil_origen}` : '');
+      setText('pg-origen-banco',  bancoOrigen);
       setText('pg-destino-nombre', d.nombre_destino || '');
       setText('pg-destino-cuil',   d.cuil_destino   ? `CUIL/CUIT: ${d.cuil_destino}` : '');
       setText('pg-destino-banco',  bancoDestino + (d.alias_destino ? ` · ${d.alias_destino}` : ''));
       document.getElementById('pg-trf-monto').textContent = monto ? `$ ${monto.toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:2})}` : '';
       document.getElementById('pg-trf-nro').textContent   = nro   ? `Op. ${nro}` : '';
 
-      // Cruzar con cuentas registradas (asegurar cache cargado)
       if (!_cachedCuentas.length) await loadCuentasSelect();
       const cuentaOrigen  = _matchCuenta(d.cuil_origen,  d.cbu_origen,  null);
       const cuentaDestino = _matchCuenta(d.cuil_destino, d.cbu_destino, d.alias_destino)
@@ -9848,34 +10102,27 @@ async function extractPagoAI() {
       document.getElementById('pg-origen-match').innerHTML  = _matchLabel(cuentaOrigen)  || '<span style="color:var(--text-secondary);font-size:11px;">No registrado</span>';
       document.getElementById('pg-destino-match').innerHTML = _matchLabel(cuentaDestino) || '<span style="color:var(--text-secondary);font-size:11px;">No registrado</span>';
 
-      // Auto-seleccionar cuenta
       const cuentaId = (cuentaDestino || cuentaOrigen)?.id;
       if (cuentaId) { const sel = document.getElementById('pg-cuenta'); if (sel) { if (sel._ssSet) sel._ssSet(cuentaId); else sel.value = cuentaId; } }
-      // Auto-identificar chofer por CUIL/nombre del origen
       if (!cachedChoferes.length) await loadChoferesSelect();
-      _autoSelectChofer(d.cuil_origen || d.proveedor_cuit, d.nombre_origen || d.proveedor_nombre);
+      _autoSelectChofer(d.cuil_origen, d.nombre_origen);
       panel.style.display = '';
     }
 
-    // Guardar para el save
     _pagoTrfData = {
-      origen_nombre: d.nombre_origen || d.proveedor_nombre || null,
-      origen_cuil:   d.cuil_origen   || null,
-      origen_cbu:    d.cbu_origen    || null,
-      origen_alias:  d.alias_origen  || d.alias || null,
-      origen_banco:  bancoOrigen     || null,
-      destino_nombre: d.nombre_destino || null,
-      destino_cuil:   d.cuil_destino   || null,
-      destino_cbu:    d.cbu_destino    || null,
-      destino_alias:  d.alias_destino  || null,
-      destino_banco:  bancoDestino     || null,
-      codigo_identificacion: d.codigo_identificacion || null,
-      nro_transaccion: nro || null,
+      origen_nombre: d.nombre_origen  || null, origen_cuil:  d.cuil_origen  || null,
+      origen_cbu:    d.cbu_origen     || null, origen_banco: bancoOrigen    || null,
+      destino_nombre: d.nombre_destino || null, destino_cuil: d.cuil_destino || null,
+      destino_cbu:    d.cbu_destino    || null, destino_alias: d.alias_destino || null,
+      destino_banco:  bancoDestino     || null, nro_transaccion: nro || null,
     };
 
-    dzSetStatus('pg-ocr-status', '✓ Datos extraídos del comprobante', 'ok');
+    dzSetStatus('pg-ocr-status', '✓ Comprobante analizado por IA', 'ok');
   } catch (err) {
-    if (st) st.textContent = _aiErrorMsg(err);
+    console.error('[extractPagoAI]', err);
+    dzSetStatus('pg-ocr-status', '✗ ' + _aiErrorMsg(err), 'error');
+  } finally {
+    _dzSetBtnLoading('dz-ai-pg-comprobante-drop', false);
   }
 }
 
@@ -12554,6 +12801,18 @@ function _parseDate(str) {
 // ============================================================
 let _currentUser = null;
 
+function toggleUsrPassword() {
+  const input = document.getElementById('usr-password');
+  const icon = document.getElementById('icon-toggle-usr-pass');
+  if (input.type === 'password') {
+    input.type = 'text';
+    icon.className = 'fa-solid fa-eye';
+  } else {
+    input.type = 'password';
+    icon.className = 'fa-solid fa-eye-slash';
+  }
+}
+
 function toggleLoginPassword() {
   const input = document.getElementById('login-password');
   const icon = document.getElementById('icon-toggle-pass');
@@ -12571,14 +12830,22 @@ async function doLogin() {
   const password = document.getElementById('login-password').value;
   const errEl = document.getElementById('login-error');
   errEl.style.display = 'none';
+
+  const tsToken = document.querySelector('[name="cf-turnstile-response"]')?.value || '';
+  if (!tsToken) {
+    errEl.textContent = 'Completá la verificación de seguridad'; errEl.style.display = 'block'; return;
+  }
+
   try {
     const res = await fetch('/api/auth/login', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password })
+      body: JSON.stringify({ email, password, turnstileToken: tsToken })
     });
     if (!res.ok) {
       const e = await res.json();
-      errEl.textContent = e.message; errEl.style.display = 'block'; return;
+      errEl.textContent = e.message; errEl.style.display = 'block';
+      if (window.turnstile) turnstile.reset();
+      return;
     }
     const user = await res.json();
     _currentUser = user;
@@ -12587,6 +12854,7 @@ async function doLogin() {
     bootApp();
   } catch (e) {
     errEl.textContent = 'Error de conexión'; errEl.style.display = 'block';
+    if (window.turnstile) turnstile.reset();
   }
 }
 
@@ -12621,10 +12889,19 @@ function _setModalTitle(elId, icon, accion, subtitulo) {
 
 function applyUserSession(user) {
   document.getElementById('user-display-name').textContent = user.nombre;
+  // Flota activa en dropdown
+  const flotaNombreEl = document.getElementById('dd-flota-nombre');
+  if (flotaNombreEl) {
+    if (user.rol === 'superadmin' && !user.flota_auditoria_id) {
+      flotaNombreEl.textContent = 'Todas las flotas';
+    } else {
+      flotaNombreEl.textContent = user.flota_nombre || ('Flota ' + (user.flota_id || 1));
+    }
+  }
   const isSuperAdmin = user.rol === 'superadmin';
   const isSuperOrAdmin = isSuperAdmin || user.rol === 'admin';
-  document.getElementById('nav-usuarios').style.display = isSuperOrAdmin ? '' : 'none';
-  document.getElementById('dd-usuarios').style.display = isSuperOrAdmin ? '' : 'none';
+  document.getElementById('nav-usuarios').style.display = (isSuperAdmin || perms.includes('usuarios')) ? '' : 'none';
+  document.getElementById('dd-usuarios').style.display = (isSuperAdmin || perms.includes('usuarios')) ? '' : 'none';
   const audNav = document.getElementById('nav-auditoria');
   if (audNav) audNav.style.display = isSuperAdmin ? '' : 'none';
   const credNav = document.getElementById('nav-credenciales');
@@ -12634,16 +12911,21 @@ function applyUserSession(user) {
   const peajesDedupBtn = document.getElementById('peajes-dedup-btn');
   if (peajesDedupBtn) peajesDedupBtn.style.display = isSuperAdmin ? '' : 'none';
   // Mostrar/ocultar nav items según permisos
+  const perms = user.permisos ?? [];
   document.querySelectorAll('.nav-item[data-pantalla]').forEach(btn => {
     const p = btn.dataset.pantalla;
-    if (p === 'usuarios') return;
-    const allowed = user.rol === 'superadmin' || (user.permisos || []).includes(p);
+    let allowed;
+    if (p === 'flotas')   allowed = isSuperAdmin;
+    else if (p === 'usuarios') allowed = isSuperAdmin || perms.includes('usuarios');
+    else allowed = isSuperAdmin || perms.includes(p);
     btn.style.display = allowed ? '' : 'none';
   });
 }
 
 function toggleUserDropdown() {
-  document.getElementById('user-dropdown').classList.toggle('open');
+  const dd = document.getElementById('user-dropdown');
+  dd.classList.toggle('open');
+  if (dd.classList.contains('open')) _loadMisFlotas();
 }
 document.addEventListener('click', e => {
   const dd = document.getElementById('user-dropdown');
@@ -12845,9 +13127,10 @@ function updatePermisosDefault() {
   const rol = document.getElementById('usr-rol').value;
   const all = document.querySelectorAll('#permisos-grid input[name=perm]');
   all.forEach(cb => {
-    if (rol === 'admin') cb.checked = true;
-    else if (rol === 'operador') cb.checked = ['dashboard','choferes','vehiculos','services'].includes(cb.value);
+    if (rol === 'admin')        cb.checked = true;
+    else if (rol === 'operador')    cb.checked = ['dashboard','choferes','vehiculos','services','multas','turnos','rendiciones'].includes(cb.value);
     else if (rol === 'solo_lectura') cb.checked = cb.value === 'dashboard';
+    else                         cb.checked = false;
   });
 }
 
@@ -12868,6 +13151,8 @@ function openNewUsuarioModal() {
   hideInlineMap('usr-map');
   document.getElementById('usr-pass-hint').textContent = '(requerida)';
   document.getElementById('modal-usuario-title').textContent = 'Nuevo Usuario';
+  const flotasSec2 = document.getElementById('usr-flotas-section');
+  if (flotasSec2) flotasSec2.style.display = 'none';
   document.querySelectorAll('#permisos-grid input[name=perm]').forEach(cb => { cb.checked = cb.value === 'dashboard'; });
   const pelEl = document.getElementById('usr-puede-eliminar');
   if (pelEl) pelEl.checked = false;
@@ -12927,8 +13212,29 @@ async function editUsuario(id) {
     if (url && img) { img.src = url; img.style.display = 'block'; if (dz) dz.classList.add('has-img'); if (eye) eye.style.display = 'flex'; }
     else { if (img) { img.src=''; img.style.display='none'; } if (dz) dz.classList.remove('has-img'); if (eye) eye.style.display='none'; }
   });
-  document.getElementById('modal-usuario-title').textContent = 'Editar Usuario';
+  document.getElementById('modal-usuario-title').textContent = 'Editar — ' + u.nombre;
+  const flotasSec = document.getElementById('usr-flotas-section');
+  if (flotasSec) { flotasSec.style.display = ''; _loadUsrFlotas(id); }
   openModal('modal-usuario');
+}
+
+let _usrFlotasOriginal = [];
+
+async function _loadUsrFlotas(uid) {
+  const listEl = document.getElementById('usr-flotas-list');
+  if (!listEl) return;
+  listEl.innerHTML = '<span style="color:var(--text-secondary);font-size:13px;">Cargando...</span>';
+  try {
+    const flotas = await apiGet('/api/flotas');
+    const checks = await Promise.all(flotas.map(f => apiGet('/api/flotas/' + f.id + '/usuarios').catch(() => [])));
+    _usrFlotasOriginal = flotas.filter((f, i) => checks[i].some(u => u.id == uid)).map(f => f.id);
+    listEl.innerHTML = flotas.length ? flotas.map(f => {
+      const checked = _usrFlotasOriginal.includes(f.id) ? 'checked' : '';
+      return `<label class="permiso-item"><input type="checkbox" name="usr-flota" value="${f.id}" ${checked}> ${esc(f.nombre)}</label>`;
+    }).join('') : '<span style="color:var(--text-secondary);font-size:13px;">Sin flotas disponibles</span>';
+  } catch(e) {
+    listEl.innerHTML = '<span style="color:var(--color-error,#ef4444);font-size:13px;">Error al cargar flotas</span>';
+  }
 }
 
 // Reemplazar loadUsuarios para incluir celular y acciones
@@ -13104,6 +13410,18 @@ async function saveUsuario(e) {
   }
   try {
     if (res.ok) {
+      // Sync flotas si estamos editando
+      if (id) {
+        const checked = [...document.querySelectorAll('#usr-flotas-list input[name="usr-flota"]:checked')].map(el => +el.value);
+        const toAdd    = checked.filter(fid => !_usrFlotasOriginal.includes(fid));
+        const toRemove = _usrFlotasOriginal.filter(fid => !checked.includes(fid));
+        try {
+          await Promise.all([
+            ...toAdd.map(fid => apiPost('/api/flotas/' + fid + '/usuarios', { usuario_id: +id, rol_en_flota: 'admin' })),
+            ...toRemove.map(fid => apiFetch('/api/flotas/' + fid + '/usuarios/' + id, { method: 'DELETE' }))
+          ]);
+        } catch(_) {}
+      }
       // Reset DNI files y dropzones
       _usrFiles.usr_dni_frente = null; _usrFiles.usr_dni_dorso = null;
       ['usr-drop-dni-frente','usr-drop-dni-dorso'].forEach(dzId => {
@@ -16261,7 +16579,9 @@ async function openModalTurno(id = null, soloVer = false) {
     const o = document.createElement('option');
     o.value = c.id;
     o.textContent = (c.nombre||'') + (c.apellido ? ' ' + c.apellido : '');
-    o.dataset.modalidad = c.modalidad || '';
+    o.dataset.modalidad           = c.modalidad || '';
+    o.dataset.vehiculoPreasignado = c.vehiculo_preasignado_id || '';
+    o.dataset.modalidadAlquiler   = c.modalidad_alquiler || '';
     selCh.appendChild(o);
   });
 
@@ -16756,8 +17076,19 @@ function _getKm(id) {
 function onTurnoChoferChange() {
   const sel = document.getElementById('tur-chofer');
   const opt = sel.options[sel.selectedIndex];
+
+  // Autocompletar modalidad de comisión
   const mod = opt?.dataset?.modalidad || '';
   if (mod) setAmt('tur-modalidad', mod);
+
+  // Autocompletar vehículo preasignado (solo si el campo está vacío)
+  const vehPre = opt?.dataset?.vehiculoPreasignado || '';
+  const selV   = document.getElementById('tur-vehiculo');
+  if (vehPre && selV && !selV.value) {
+    selV.value = vehPre;
+    if (selV._ssSet) selV._ssSet(vehPre);
+  }
+
   calcTurno();
 }
 
@@ -18785,9 +19116,9 @@ async function loadIaLog() {
     if (!res.ok) return;
     const { totals } = await res.json();
     const costo = (+totals?.total_costo||0);
-    const fmt = n => (n||0).toLocaleString('es-AR');
+    const fmt = n => Number(n || 0).toLocaleString('es-AR');
     const el = id => document.getElementById(id);
-    if (el('ia-resumen-costo'))      el('ia-resumen-costo').textContent      = `$${costo.toFixed(4)} USD`;
+    if (el('ia-resumen-costo'))      el('ia-resumen-costo').textContent      = `$${costo.toFixed(2)} USD`;
     if (el('ia-resumen-llamadas'))   el('ia-resumen-llamadas').textContent   = fmt(totals?.total);
     if (el('ia-resumen-tokens-in'))  el('ia-resumen-tokens-in').textContent  = fmt(totals?.total_input);
     if (el('ia-resumen-tokens-out')) el('ia-resumen-tokens-out').textContent = fmt(totals?.total_output);
@@ -20256,3 +20587,378 @@ const DatePicker = (() => {
 
   return { init: init, initAll: initAll };
 })();
+
+// ============================================================
+// API HELPERS (GET / POST / PUT / generic fetch con JSON)
+// ============================================================
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+const confirmar = (msg, ok, cancel) => showConfirm(msg, ok, cancel);
+async function apiFetch(url, opts = {}) {
+  const res = await fetch(url, opts);
+  if (!res.ok) {
+    let msg = res.statusText;
+    try { const j = await res.json(); msg = j.error || j.message || msg; } catch(_) {}
+    throw new Error(msg);
+  }
+  const ct = res.headers.get('content-type') || '';
+  return ct.includes('application/json') ? res.json() : res.text();
+}
+async function apiGet(url) {
+  return apiFetch(url);
+}
+async function apiPost(url, body) {
+  return apiFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+}
+async function apiPut(url, body) {
+  return apiFetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+}
+
+// ============================================================
+// MÃ”DULO FLOTAS (solo superadmin)
+// ============================================================
+let _flotasList = [];
+let _flotaDetalleId = null;
+
+async function loadFlotas() {
+  try {
+    const data = await apiGet('/api/flotas');
+    _flotasList = data;
+    renderFlotasTable(data);
+  } catch (e) { showToast('Error al cargar flotas: ' + e.message, 'error'); }
+}
+
+function filtrarFlotas() {
+  const q      = (document.getElementById('flotas-search-input')?.value  || '').toLowerCase();
+  const plan   =  document.getElementById('flotas-filter-plan')?.value  || '';
+  const estado =  document.getElementById('flotas-filter-estado')?.value;
+  let list = _flotasList;
+  if (q)      list = list.filter(f => f.nombre.toLowerCase().includes(q) || (f.slug||'').toLowerCase().includes(q));
+  if (plan)   list = list.filter(f => f.plan === plan);
+  if (estado !== undefined && estado !== '') list = list.filter(f => String(f.activo ? 1 : 0) === estado);
+  renderFlotasTable(list);
+}
+
+function renderFlotasTable(list) {
+  const tbody = document.getElementById('flotas-tbody');
+  if (!tbody) return;
+  if (!list.length) {
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:24px;color:var(--text-secondary);">Sin flotas registradas</td></tr>';
+    return;
+  }
+  tbody.innerHTML = list.map(f => {
+    const planBadge = f.plan === 'enterprise' ? 'badge-purple' : f.plan === 'pro' ? 'badge-blue' : 'badge-gray';
+    const deletBtn = f.id == 1 ? '' : `<button class=”tbl-action-btn tbl-btn-delete” title=”Eliminar” onclick=”eliminarFlota(${f.id})”><i class=”fa-solid fa-trash”></i></button>`;
+    return `<tr>
+      <td><strong>${esc(f.nombre)}</strong></td>
+      <td><code style=”font-size:11px;color:var(--text-secondary);”>${esc(f.slug)}</code></td>
+      <td><span class=”badge ${planBadge}”>${f.plan}</span></td>
+      <td>${esc(f.email_contacto || '—')}</td>
+      <td style=”text-align:center;”>${f.total_usuarios ?? 0}</td>
+      <td style=”text-align:center;”>${f.total_vehiculos ?? 0}</td>
+      <td style=”text-align:center;”>${f.total_choferes ?? 0}</td>
+      <td style=”text-align:center;”><span class=”badge ${f.activo ? 'badge-green' : 'badge-red'}”>${f.activo ? 'Activa' : 'Inactiva'}</span></td>
+      <td style=”text-align:center;white-space:nowrap;”>
+        <button class=”tbl-action-btn tbl-btn-view” title=”Ver detalle” onclick=”openFlotaDetalle(${f.id})”><i class=”fa-solid fa-eye”></i></button>
+        <button class=”tbl-action-btn tbl-btn-edit” title=”Editar” onclick=”openFlotaModal(${f.id})”><i class=”fa-solid fa-pen-to-square”></i></button>
+        ${deletBtn}
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function openFlotaModal(id) {
+  const f = id ? _flotasList.find(x => x.id == id) : null;
+  document.getElementById('modal-flota-title').textContent = f ? 'Editar Flota' : 'Nueva Flota';
+  document.getElementById('flota-id').value = f ? f.id : '';
+  document.getElementById('flota-nombre').value = f ? f.nombre : '';
+  document.getElementById('flota-slug').value = f ? f.slug : '';
+  document.getElementById('flota-plan').value = f ? f.plan : 'basic';
+  document.getElementById('flota-email').value = f ? (f.email_contacto || '') : '';
+  document.getElementById('flota-activo').checked = f ? !!f.activo : true;
+  const nombreEl = document.getElementById('flota-nombre');
+  const slugEl = document.getElementById('flota-slug');
+  if (!id) {
+    nombreEl.oninput = () => {
+      slugEl.value = nombreEl.value.toLowerCase()
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    };
+  } else {
+    nombreEl.oninput = null;
+  }
+  openModal('modal-flota');
+}
+
+async function saveFlota() {
+  const id = document.getElementById('flota-id').value;
+  const body = {
+    nombre: document.getElementById('flota-nombre').value.trim(),
+    slug:   document.getElementById('flota-slug').value.trim(),
+    plan:   document.getElementById('flota-plan').value,
+    email_contacto: document.getElementById('flota-email').value.trim() || null,
+    activo: document.getElementById('flota-activo').checked ? 1 : 0
+  };
+  if (!body.nombre || !body.slug) return showToast('Nombre y slug son obligatorios', 'warning');
+  try {
+    if (id) {
+      await apiPut('/api/flotas/' + id, body);
+      showToast('Flota actualizada', 'success');
+    } else {
+      await apiPost('/api/flotas', body);
+      showToast('Flota creada', 'success');
+    }
+    closeModal('modal-flota');
+    loadFlotas();
+  } catch (e) { showToast(e.message || 'Error al guardar', 'error'); }
+}
+
+async function eliminarFlota(id) {
+  if (!await confirmar('Â¿Eliminar esta flota? Esta acciÃ³n es irreversible.')) return;
+  try {
+    await apiFetch('/api/flotas/' + id, { method: 'DELETE' });
+    showToast('Flota eliminada', 'success');
+    loadFlotas();
+  } catch (e) { showToast(e.message || 'Error al eliminar', 'error'); }
+}
+
+// â”€â”€ Modal detalle flota â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+async function openFlotaDetalle(id) {
+  _flotaDetalleId = id;
+  const f = _flotasList.find(x => x.id == id);
+  document.getElementById('modal-flota-detalle-title').textContent = f ? f.nombre : 'Detalle Flota';
+  openModal('modal-flota-detalle');
+  switchFlotaTab('ft-usuarios', document.querySelector('.flota-tab-btn[data-ftab="ft-usuarios"]'));
+  _loadFlotaUsuarios(id);
+  _loadUsuariosDisponibles(id);
+}
+
+function switchFlotaTab(tabId, btn) {
+  document.querySelectorAll('.flota-tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.flota-tab-pane').forEach(p => { p.style.display = 'none'; p.classList.remove('active'); });
+  if (btn) btn.classList.add('active');
+  const pane = document.getElementById(tabId);
+  if (pane) { pane.style.display = 'flex'; pane.classList.add('active'); }
+  if (tabId === 'ft-vehiculos')    _loadFlotaVehiculos(_flotaDetalleId);
+  if (tabId === 'ft-choferes')     _loadFlotaChoferes(_flotaDetalleId);
+  if (tabId === 'ft-propietarios') _loadFlotaPropietarios(_flotaDetalleId);
+}
+
+async function _loadFlotaUsuarios(id) {
+  const tbody = document.getElementById('ft-usuarios-tbody');
+  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:16px;">Cargandoâ€¦</td></tr>';
+  try {
+    const list = await apiGet('/api/flotas/' + id + '/usuarios');
+    if (!list.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:16px;color:var(--text-secondary);">Sin usuarios asignados</td></tr>';
+      return;
+    }
+    tbody.innerHTML = list.map(u => `<tr>
+      <td>${esc(u.nombre)}</td>
+      <td style="font-size:11px;color:var(--text-secondary);">${esc(u.email)}</td>
+      <td><span class="badge badge-blue">${esc(u.rol_en_flota)}</span></td>
+      <td style="font-size:11px;">${u.fecha_desde ? u.fecha_desde.slice(0, 10) : 'â€”'}</td>
+      <td style="text-align:center;">
+        <button class="btn-icon btn-icon-danger" title="Quitar" onclick="quitarUsuarioFlota(${u.id})"><i class="fa-solid fa-user-minus"></i></button>
+      </td>
+    </tr>`).join('');
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--color-error);padding:16px;">' + e.message + '</td></tr>';
+  }
+}
+
+async function _loadUsuariosDisponibles() {
+  const sel = document.getElementById('ft-user-select');
+  try {
+    const list = await apiGet('/api/flotas/usuarios-disponibles');
+    sel.innerHTML = '<option value="">â€” Seleccionar usuario â€”</option>' +
+      list.map(u => '<option value="' + u.id + '">' + esc(u.nombre) + ' (' + esc(u.email) + ')</option>').join('');
+  } catch (e) { /* silencioso */ }
+}
+
+async function asignarUsuarioFlota() {
+  const uid = document.getElementById('ft-user-select').value;
+  const rol = document.getElementById('ft-user-rol').value;
+  if (!uid) return showToast('SeleccionÃ¡ un usuario', 'warning');
+  try {
+    await apiPost('/api/flotas/' + _flotaDetalleId + '/usuarios', { usuario_id: uid, rol_en_flota: rol });
+    showToast('Usuario asignado', 'success');
+    _loadFlotaUsuarios(_flotaDetalleId);
+    loadFlotas();
+  } catch (e) { showToast(e.message || 'Error', 'error'); }
+}
+
+async function quitarUsuarioFlota(uid) {
+  if (!await confirmar('Â¿Quitar este usuario de la flota?')) return;
+  try {
+    await apiFetch('/api/flotas/' + _flotaDetalleId + '/usuarios/' + uid, { method: 'DELETE' });
+    showToast('Usuario removido', 'success');
+    _loadFlotaUsuarios(_flotaDetalleId);
+    loadFlotas();
+  } catch (e) { showToast(e.message || 'Error', 'error'); }
+}
+
+async function _loadFlotaVehiculos(id) {
+  const tbody = document.getElementById('ft-vehiculos-tbody');
+  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:16px;">Cargandoâ€¦</td></tr>';
+  try {
+    const list = await apiGet('/api/flotas/' + id + '/vehiculos');
+    if (!list.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:16px;color:var(--text-secondary);">Sin vehÃ­culos en esta flota</td></tr>';
+      return;
+    }
+    tbody.innerHTML = list.map(v => `<tr>
+      <td><strong>${esc(v.patente)}</strong></td>
+      <td>${esc(v.modelo_completo || 'â€”')}</td>
+      <td>${esc(v.color || 'â€”')}</td>
+      <td style="text-align:center;"><span class="badge ${v.activo ? 'badge-green' : 'badge-red'}">${v.activo ? 'Activo' : 'Baja'}</span></td>
+      <td style="text-align:center;">
+        <button class="btn-icon" title="Ver historial" onclick="verHistorialVehiculo(${v.id})"><i class="fa-solid fa-clock-rotate-left"></i></button>
+      </td>
+    </tr>`).join('');
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--color-error);padding:16px;">' + e.message + '</td></tr>';
+  }
+}
+
+async function _loadFlotaChoferes(id) {
+  const tbody = document.getElementById('ft-choferes-tbody');
+  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:16px;">Cargandoâ€¦</td></tr>';
+  try {
+    const list = await apiGet('/api/flotas/' + id + '/choferes');
+    if (!list.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:16px;color:var(--text-secondary);">Sin choferes en esta flota</td></tr>';
+      return;
+    }
+    tbody.innerHTML = list.map(c => `<tr>
+      <td>${esc(c.nombre)}</td>
+      <td>${esc(c.apellido || 'â€”')}</td>
+      <td>${esc(c.dni || 'â€”')}</td>
+      <td style="text-align:center;"><span class="badge ${c.activo ? 'badge-green' : 'badge-red'}">${c.activo ? 'Activo' : 'Baja'}</span></td>
+      <td style="text-align:center;">
+        <button class="btn-icon" title="Ver historial" onclick="verHistorialChofer(${c.id})"><i class="fa-solid fa-clock-rotate-left"></i></button>
+      </td>
+    </tr>`).join('');
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--color-error);padding:16px;">' + e.message + '</td></tr>';
+  }
+}
+
+async function _loadFlotaPropietarios(id) {
+  const tbody = document.getElementById('ft-propietarios-tbody');
+  tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:16px;">Cargando…</td></tr>';
+  try {
+    const list = await apiGet('/api/flotas/' + id + '/propietarios');
+    if (!list.length) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:16px;color:var(--text-secondary);">Sin propietarios en esta flota</td></tr>';
+      return;
+    }
+    tbody.innerHTML = list.map(p => `<tr>
+      <td>${esc(p.nombre)}</td>
+      <td>${esc(p.apellido || '—')}</td>
+      <td style="font-size:12px;">${esc(p.dni || '—')}${p.cuil ? '<br><span style="color:var(--text-secondary);">' + esc(p.cuil) + '</span>' : ''}</td>
+      <td>${esc(p.celular || '—')}</td>
+      <td style="text-align:center;">${p.total_vehiculos ?? 0}</td>
+      <td style="text-align:center;"><span class="badge ${p.activo ? 'badge-success' : 'badge-danger'}">${p.activo ? 'Activo' : 'Baja'}</span></td>
+    </tr>`).join('');
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--color-error);padding:16px;">' + e.message + '</td></tr>';
+  }
+}
+
+async function verHistorialVehiculo(vid) {
+  try {
+    const list = await apiGet('/api/flotas/vehiculos/' + vid + '/historial');
+    showToast('Historial: ' + list.length + ' registros de flota', 'info');
+  } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function verHistorialChofer(cid) {
+  try {
+    const list = await apiGet('/api/flotas/choferes/' + cid + '/historial');
+    showToast('Historial: ' + list.length + ' registros de flota', 'info');
+  } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function switchAuditoriaFlota() {
+  try {
+    await apiPost('/api/auth/switch-flota', { flota_id: _flotaDetalleId });
+    const f = _flotasList.find(x => x.id == _flotaDetalleId);
+    showToast('Auditando: ' + (f ? f.nombre : 'Flota ' + _flotaDetalleId), 'success');
+    closeModal('modal-flota-detalle');
+  } catch (e) { showToast(e.message, 'error'); }
+}
+
+// â”€â”€ Selector de flota en dropdown de usuario â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+let _misFlotas = [];
+let _flotaSelectorOpen = false;
+
+async function _loadMisFlotas() {
+  try {
+    const data = await apiGet('/api/auth/mis-flotas');
+    _misFlotas = data.flotas || [];
+    const list = document.getElementById('dd-flota-list');
+    if (!list) return;
+    // Ocultar selector si solo tiene 1 flota y no es superadmin
+    const chevron = document.getElementById('dd-flota-chevron');
+    if (_misFlotas.length <= 1 && !data.es_superadmin) {
+      if (chevron) chevron.style.display = 'none';
+      return;
+    }
+    const currentId = data.current_flota_id;
+    let html = '';
+    if (data.es_superadmin) {
+      html += '<div class="flota-opt ' + (!currentId ? 'flota-opt-active' : '') + '" onclick="selectFlota(null)">' +
+        '<i class="fa-solid fa-layer-group" style="font-size:11px;color:var(--text-secondary);"></i> Todas las flotas' +
+        '</div>';
+    }
+    html += _misFlotas.map(f => {
+      const active = f.id == currentId ? 'flota-opt-active' : '';
+      return '<div class="flota-opt ' + active + '" onclick="selectFlota(' + f.id + ',' + JSON.stringify(f.nombre) + ')">' +
+        '<i class="fa-solid fa-building-user" style="font-size:11px;color:var(--accent-color);"></i> ' + esc(f.nombre) +
+        '</div>';
+    }).join('');
+    list.innerHTML = html;
+  } catch (e) {
+    // silencioso si no tiene flotas asignadas aÃºn
+  }
+}
+
+function toggleFlotaSubmenu(e) {
+  e.stopPropagation();
+  const list = document.getElementById('dd-flota-list');
+  const chevron = document.getElementById('dd-flota-chevron');
+  if (!list) return;
+  _loadMisFlotas().then(() => {});
+  _flotaSelectorOpen = !_flotaSelectorOpen;
+  list.style.display = _flotaSelectorOpen ? 'block' : 'none';
+  if (chevron) chevron.style.transform = _flotaSelectorOpen ? 'rotate(90deg)' : '';
+}
+
+async function selectFlota(id, nombre) {
+  try {
+    const data = await apiPost('/api/auth/switch-flota', { flota_id: id });
+    const flotaNombreEl = document.getElementById('dd-flota-nombre');
+    if (flotaNombreEl) {
+      flotaNombreEl.textContent = id ? (nombre || data.flota?.nombre || 'Flota ' + id) : 'Todas las flotas';
+    }
+    // Actualizar activo en lista
+    document.querySelectorAll('.flota-opt').forEach(el => el.classList.remove('flota-opt-active'));
+    const list = document.getElementById('dd-flota-list');
+    if (list) {
+      const items = list.querySelectorAll('.flota-opt');
+      items.forEach(el => {
+        if (el.textContent.trim() === (id ? (nombre || '') : 'Todas las flotas')) el.classList.add('flota-opt-active');
+      });
+    }
+    // Cerrar dropdown y recargar datos del módulo activo
+    document.getElementById('user-dropdown').classList.remove('open');
+    _flotaSelectorOpen = false;
+    if (list) list.style.display = 'none';
+    // Recargar el tab activo con el nuevo contexto de flota
+    const activeTab = document.querySelector('.content-view.active');
+    if (activeTab) loadTabData(activeTab.id);
+    showToast(id ? ('Flota: ' + (nombre || id)) : 'Viendo todas las flotas', 'success');
+  } catch (e) { showToast(e.message || 'Error al cambiar flota', 'error'); }
+}
